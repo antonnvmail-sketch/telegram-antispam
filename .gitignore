@@ -1,0 +1,39 @@
+# Secrets and machine-specific settings
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+# Real training data and generated models/databases
+*.txt
+!data.example.txt
+!requirements.txt
+!requirements.lock.txt
+*.csv
+*.tsv
+*.jsonl
+*.sqlite
+*.sqlite-*
+*.db
+*.db-*
+*.joblib
+*.pkl
+*.pickle
+models/
+runtime/
+# Logs, backups and local environments
+*.log
+*.log.*
+backups/
+backup/
+*.bak
+*.zip
+venv/
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

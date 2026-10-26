@@ -1,0 +1,6 @@
+# Direct dependencies match the source environment; full tested constraints below.
+-c requirements.lock.txt
+aiogram==3.30.0
+scikit-learn==1.9.0
+python-dotenv==1.2.2
+joblib==1.5.3

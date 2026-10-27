@@ -1,4 +1,6 @@
 import sqlite3
+from contextlib import closing
+from pathlib import Path
 from typing import List, Tuple
 
 def init_db(path: str):
@@ -23,6 +25,9 @@ def init_db(path: str):
             timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
         )
     """)
+    conn.executescript((Path(__file__).parent / 'migrations/002_moderation_decisions.sql').read_text(encoding='utf-8'))
+    if 'dry_run' not in {row[1] for row in c.execute('PRAGMA table_info(moderation_decisions)')}:
+        c.execute('ALTER TABLE moderation_decisions ADD COLUMN dry_run INTEGER NOT NULL DEFAULT 0')
     conn.commit()
     conn.close()
 
@@ -50,3 +55,15 @@ def log_action(path: str, user_id: int, username: str, chat_id: int, message_id:
     )
     conn.commit()
     conn.close()
+
+
+def log_decision(path: str, record: dict, *, chat_id: int, message_id: int, source: str):
+    values = {**record, 'chat_id': chat_id, 'message_id': message_id, 'source': source}
+    columns = ('decision_id', 'created_at', 'chat_id', 'message_id', 'source', 'label',
+        'confidence', 'p_spam', 'action', 'reason', 'delete_threshold', 'moderate_threshold',
+        'model_version', 'input_sha256', 'policy_version', 'schema_version', 'dry_run')
+    with closing(sqlite3.connect(path)) as conn:
+        with conn:
+            conn.execute('INSERT INTO moderation_decisions (' + ','.join(columns)
+                + ') VALUES (' + ','.join('?' for _ in columns) + ')',
+                tuple(values[k] for k in columns))

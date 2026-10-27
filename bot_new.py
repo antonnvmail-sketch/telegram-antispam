@@ -6,19 +6,25 @@ from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError, TelegramNotFound
 from config import TELEGRAM_TOKEN, ADMIN_IDS, CHAT_IDS, DATASET_PATH, MODEL_PATH, SPAM_DELETE_THRESHOLD, SPAM_MODERATE_THRESHOLD, LOG_FILE, LOG_MAX_BYTES, LOG_BACKUP_COUNT, SHADOW_MODE_ENABLED, SHADOW_MODEL_PATH, SHADOW_MODEL_VERSION, SHADOW_DB_PATH, SHADOW_DB_TIMEOUT_SECONDS
-from database import init_db, add_message, get_all_messages, log_action
-from ml import train_model, load_model, predict, evaluate_model
+from database import init_db, add_message, get_all_messages, log_action, log_decision
+from ml import train_model, evaluate_model
 from moderation import is_admin
 from shadow import ShadowRuntime, admin_command_allowed
+from moderation_actions import execute_actions
+from decisions import load_versioned_model, classify_and_decide, persist_decision, diagnostic_text
 import os
 import io
 from import_dataset import import_txt_to_db
-from config import DRY_RUN, validate_runtime
+from config import DRY_RUN, MONITOR_SC_ENABLED, validate_runtime
 
 validate_runtime()
 
 # Логирование в файл и stdout
+APP_VERSION = "1.0.1"
+
 logger = logging.getLogger(__name__)
+action_logger = logging.getLogger("antispam.actions")
+action_logger.setLevel(logging.INFO)
 logger.setLevel(logging.WARNING)
 file_handler = RotatingFileHandler(LOG_FILE, maxBytes=LOG_MAX_BYTES, backupCount=LOG_BACKUP_COUNT, encoding='utf-8')
 file_handler.setFormatter(logging.Formatter('%(asctime)s %(levelname)s %(message)s'))
@@ -91,7 +97,7 @@ async def check_bot_permissions(chat_id: int) -> dict:
 
 # validate_runtime() already requires an explicitly prepared local model.
 init_db(DATASET_PATH)
-model = load_model(MODEL_PATH)
+model = load_versioned_model(MODEL_PATH)
 
 shadow_runtime = ShadowRuntime.load(
     enabled=SHADOW_MODE_ENABLED,
@@ -100,6 +106,13 @@ shadow_runtime = ShadowRuntime.load(
     database_path=SHADOW_DB_PATH,
     database_timeout=SHADOW_DB_TIMEOUT_SECONDS,
 )
+
+def record_decision(message, decision, source):
+    return persist_decision(
+        decision, chat_id=message.chat.id, message_id=message.message_id, source=source,
+        write_record=lambda record, **context: log_decision(DATASET_PATH, record, **context),
+        logger=action_logger,
+    )
 
 async def observe_shadow(message: types.Message, *, text: str, source_kind: str, production_label=None, production_p_spam=None, production_action="production_skipped", production_skipped=True):
     user_id = message.from_user.id if message.from_user else 0
@@ -191,12 +204,13 @@ async def cmd_status(message: types.Message):
         await message.reply("⛔ Только для администраторов.")
         return
 
-    status_info = []
+    status_info = [f"🤖 Версия бота: {APP_VERSION}"]
     status_info.append(f"🧪 Пробный режим (DRY_RUN): {DRY_RUN}")
 
     # Проверка модели
     if model:
         status_info.append("✅ Модель загружена")
+        status_info.append(f"Версия модели: {model.version}")
     else:
         status_info.append("❌ Модель не загружена")
 
@@ -260,23 +274,17 @@ async def cmd_test_spam(message: types.Message):
         await message.reply("Используйте: /test_spam <текст для проверки>")
         return
 
-    label, confidence = predict(model, text)
-
-    response = f"""
-🔍 Результат анализа:
-📝 Текст: "{text}"
-🏷️ Классификация: {label}
-📊 Уверенность: {confidence:.3f}
-
-Это проверка текста. Действия не выполнялись.
-{'🧪 Включён пробный режим (DRY_RUN).' if DRY_RUN else ''}
-
-{'🗑️ Рекомендация: удалить' if label == 'spam' and confidence > SPAM_DELETE_THRESHOLD else ''}
-{'⚠️ Рекомендация: передать на модерацию' if label == 'spam' and SPAM_MODERATE_THRESHOLD < confidence <= SPAM_DELETE_THRESHOLD else ''}
-{'✅ НЕ СПАМ' if label == 'ham' or confidence <= SPAM_MODERATE_THRESHOLD else ''}
-    """
-
-    await message.reply(response)
+    try:
+        decision = classify_and_decide(
+            model, text, delete_threshold=SPAM_DELETE_THRESHOLD,
+            moderate_threshold=SPAM_MODERATE_THRESHOLD, dry_run=DRY_RUN,
+        )
+    except Exception as exc:
+        logger.error("Diagnostic classification failed: %s", type(exc).__name__)
+        await message.reply("❌ Не удалось получить решение модели. Действия не выполнялись.")
+        return
+    saved = record_decision(message, decision, "test_spam")
+    await message.reply(diagnostic_text(decision, saved=saved))
 
 @dp.message(Command("add_spam"))
 async def cmd_add_spam(message: types.Message):
@@ -327,7 +335,7 @@ async def cmd_train(message: types.Message):
         return
     train_model(data, MODEL_PATH)
     global model
-    model = load_model(MODEL_PATH)
+    model = load_versioned_model(MODEL_PATH)
     await message.reply("✅ Модель успешно обучена.")
 
 @dp.message(Command("stats"))
@@ -382,9 +390,12 @@ async def filter_message(message: types.Message):
 
     # Классификация сообщения
     try:
-        label, confidence = predict(model, message.text)
-        production_p_spam = confidence if label == "spam" else 1.0 - confidence
-        production_action = "allow"
+        decision = classify_and_decide(
+            model, message.text, delete_threshold=SPAM_DELETE_THRESHOLD,
+            moderate_threshold=SPAM_MODERATE_THRESHOLD, dry_run=DRY_RUN,
+        )
+        label, confidence = decision.label, decision.confidence
+        production_p_spam = decision.p_spam
         logger.info(f"Message classified as '{label}' with confidence {confidence:.3f} from user {from_user_id}")
     except Exception as e:
         logger.error(f"Error during message classification: {e}")
@@ -392,104 +403,20 @@ async def filter_message(message: types.Message):
 
     user_id_safe = from_user_id if from_user_id is not None else 0
 
-    # Логируем классификацию
-    log_action(
-        DATASET_PATH,
-        user_id_safe,
-        from_user_username,
-        message.chat.id,
-        message.message_id,
-        f"classified_{label}",
-        message.text
+    result = await execute_actions(
+        message=message, decision_record=decision,
+        journal_decision=lambda record: record_decision(message, record, "filter"),
+        admins=ADMIN_IDS, send_message=bot.send_message,
+        write_action=lambda action: log_action(
+            DATASET_PATH, user_id_safe, from_user_username,
+            message.chat.id, message.message_id, action, message.text,
+        ),
+        monitor_batch=monitor_record_batch if MONITOR_SC_ENABLED else lambda *args: None,
+        check_permissions=check_bot_permissions, logger=action_logger,
+        rejected_errors=(TelegramBadRequest, TelegramForbiddenError, TelegramNotFound),
+        bad_request_error=TelegramBadRequest,
     )
-
-    if DRY_RUN:
-        action = "would_allow"
-        if label == "spam" and confidence > SPAM_DELETE_THRESHOLD:
-            action = "would_delete_spam"
-        elif label == "spam" and confidence > SPAM_MODERATE_THRESHOLD:
-            action = "would_notify_moderators"
-        log_action(DATASET_PATH, user_id_safe, from_user_username, message.chat.id,
-                   message.message_id, action, message.text)
-        await observe_shadow(message, text=message.text, source_kind="text",
-                             production_label=label, production_p_spam=production_p_spam,
-                             production_action=action, production_skipped=False)
-        return
-
-    # Проверяем пороги и действуем
-    if label == "spam" and confidence > SPAM_DELETE_THRESHOLD:
-        production_action = "delete_attempted"
-        logger.info(f"Spam detected with high confidence ({confidence:.3f} > {SPAM_DELETE_THRESHOLD}), attempting to delete message {message.message_id}")
-
-        try:
-            await message.delete()
-            production_action = "deleted"
-            logger.info(f"Successfully deleted spam message {message.message_id} from user {from_user_id}")
-
-            log_action(
-                DATASET_PATH,
-                user_id_safe,
-                from_user_username,
-                message.chat.id,
-                message.message_id,
-                "deleted_spam",
-                message.text
-            )
-
-            # Уведомляем админов об удалении
-            monitor_succeeded = monitor_failed = False
-            for admin_id in ADMIN_IDS:
-                try:
-                    await bot.send_message(
-                        admin_id,
-                        f"🗑️ УДАЛЕН СПАМ (confidence: {confidence:.3f}):\n\n{message.text}\n\nОт: @{from_user_username or from_user_id}\nЧат: {message.chat.id}"
-                    )
-                    monitor_succeeded = True
-                except Exception as e:
-                    monitor_failed = True
-                    logger.warning(f"Failed to notify admin {admin_id} about deletion: {e}")
-            monitor_record_batch(monitor_succeeded, monitor_failed)
-
-        except TelegramBadRequest as e:
-            logger.error(f"TelegramBadRequest when deleting message {message.message_id}: {e}")
-            # Проверяем права бота
-            perms = await check_bot_permissions(message.chat.id)
-            if not perms['can_delete_messages']:
-                logger.error(f"Bot does not have delete permissions in chat {message.chat.id}")
-                for admin_id in ADMIN_IDS:
-                    try:
-                        await bot.send_message(
-                            admin_id,
-                            f"❌ НЕ МОГУ УДАЛИТЬ СПАМ - НЕТ ПРАВ!\n\nТекст: {message.text}\nОт: @{from_user_username or from_user_id}\nЧат: {message.chat.id}\n\nДайте боту права администратора!"
-                        )
-                    except Exception as notify_e:
-                        logger.warning(f"Failed to notify admin {admin_id} about permission error: {notify_e}")
-        except TelegramForbiddenError as e:
-            logger.error(f"TelegramForbiddenError when deleting message {message.message_id}: {e}")
-        except TelegramNotFound as e:
-            logger.error(f"TelegramNotFound when deleting message {message.message_id}: {e}")
-        except Exception as e:
-            logger.error(f"Unexpected error when deleting message {message.message_id}: {e}")
-
-    elif label == "spam" and confidence > SPAM_MODERATE_THRESHOLD:
-        production_action = "moderation_notification_attempted"
-        logger.info(f"Spam detected for moderation ({confidence:.3f} > {SPAM_MODERATE_THRESHOLD}), notifying admins")
-
-        # Пересылаем на модерацию
-        monitor_succeeded = monitor_failed = False
-        for admin_id in ADMIN_IDS:
-            try:
-                await bot.send_message(
-                    admin_id,
-                    f"⚠️ ПОДОЗРЕНИЕ НА СПАМ (confidence: {confidence:.3f}):\n\n{message.text}\n\nОт: @{from_user_username or from_user_id}\nЧат: {message.chat.id}"
-                )
-                monitor_succeeded = True
-            except Exception as e:
-                monitor_failed = True
-                logger.warning(f"Failed to notify admin {admin_id} about potential spam: {e}")
-        monitor_record_batch(monitor_succeeded, monitor_failed)
-    else:
-        logger.debug(f"Message classified as '{label}' with confidence {confidence:.3f} - no action needed")
+    production_action = result.shadow_action
 
     await observe_shadow(
         message, text=message.text, source_kind="text", production_label=label,
@@ -513,6 +440,7 @@ if __name__ == "__main__":
         logger.info(f"Admins: {ADMIN_IDS}")
         logger.info(f"Delete threshold: {SPAM_DELETE_THRESHOLD}")
         logger.info(f"Moderate threshold: {SPAM_MODERATE_THRESHOLD}")
+        logger.warning("Antispam version=%s model_version=%s dry_run=%s", APP_VERSION, model.version, DRY_RUN)
         logger.warning(f"Shadow enabled={shadow_runtime.enabled}, loaded={shadow_runtime.loaded}, version={shadow_runtime.model_version}")
         try:
             await dp.start_polling(bot)

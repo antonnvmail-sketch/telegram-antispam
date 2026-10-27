@@ -9,6 +9,7 @@ ADMIN_IDS = [int(x) for x in os.getenv("ADMIN_IDS", "").split(",") if x]
 CHAT_IDS = [int(x) for x in os.getenv("CHAT_IDS", "").split(",") if x]
 DATASET_PATH = os.getenv("DATASET_PATH", "dataset.sqlite")
 MODEL_PATH = os.getenv("MODEL_PATH", "model.joblib")
+MONITOR_SC_ENABLED = os.getenv("MONITOR_SC_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
 DRY_RUN = os.getenv("DRY_RUN", "true").strip().lower() in {"1", "true", "yes", "on"}
 
 # Полностью пассивная экспериментальная модель. Любая ошибка должна быть fail-open.

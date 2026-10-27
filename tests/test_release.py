@@ -86,7 +86,9 @@ with patch.object(Dispatcher,'start_polling',polling),patch.object(Bot,'__call__
     assert module['DRY_RUN'] is True
     bot,dp=module['bot'],module['dp']
     # Real dispatch/filter/middleware, forced high-spam score: dry run must not delete or notify.
-    module['filter_message'].__globals__['predict']=lambda model,text:('spam',0.99)
+    from decisions import decide
+    from dataclasses import replace
+    module['filter_message'].__globals__['classify_and_decide']=lambda model,text,**kw: replace(decide('spam',.99,model_version='sha256:'+'a'*64,text=text,delete_threshold=kw['delete_threshold'],moderate_threshold=kw['moderate_threshold']),dry_run=kw['dry_run'])
     msg=Message(message_id=1,date=datetime.now(timezone.utc),chat=Chat(id=-100,type='supergroup'),from_user=User(id=8,is_bot=False,first_name='Demo'),text='Synthetic test only')
     asyncio.run(dp.feed_update(bot,Update(update_id=1,message=msg)))
     with sqlite3.connect(module['DATASET_PATH']) as con:

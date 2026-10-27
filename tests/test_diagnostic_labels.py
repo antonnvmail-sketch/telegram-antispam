@@ -4,6 +4,8 @@ import asyncio
 from pathlib import Path
 from types import SimpleNamespace
 import unittest
+from decisions import decide, diagnostic_text
+from dataclasses import replace
 
 
 def load_diagnostic(source):
@@ -12,7 +14,7 @@ def load_diagnostic(source):
     handler.decorator_list = []
     module = ast.Module(body=[handler], type_ignores=[])
     namespace = {'types': SimpleNamespace(Message=object), 'is_admin': lambda uid: uid == 7,
-                 'model': object(), 'SPAM_DELETE_THRESHOLD': 0.7, 'SPAM_MODERATE_THRESHOLD': 0.4}
+                 'model': object(), 'record_decision': lambda *args: True, 'diagnostic_text': diagnostic_text, 'SPAM_DELETE_THRESHOLD': 0.7, 'SPAM_MODERATE_THRESHOLD': 0.4}
     exec(compile(ast.fix_missing_locations(module), '<diagnostic-handler>', 'exec'), namespace)
     return namespace
 
@@ -23,14 +25,14 @@ def verify_diagnostic(source, has_dry_run):
         namespace['DRY_RUN'] = dry
         for label, score, expected in [('spam', 0.99, 'Рекомендация: удалить'),
                                        ('spam', 0.7, 'Рекомендация: передать на модерацию'),
-                                       ('ham', 0.9, 'НЕ СПАМ')]:
+                                       ('ham', 0.9, 'Рекомендация: сохранить')]:
             replies = []
             async def reply(text):
                 replies.append(text)
             # No delete/send_message/database methods exist: any such action fails the test.
             message = SimpleNamespace(from_user=SimpleNamespace(id=7),
                                       text='/test_spam вымышленный пример', reply=reply)
-            namespace['predict'] = lambda model, text, label=label, score=score: (label, score)
+            namespace['classify_and_decide'] = lambda model, text, label=label, score=score, dry_run=False, **kw: replace(decide(label,score,model_version='sha256:'+'a'*64,text=text,**kw),dry_run=dry_run)
             asyncio.run(namespace['cmd_test_spam'](message))
             assert len(replies) == 1
             response = replies[0]
@@ -46,10 +48,10 @@ class DiagnosticLabels(unittest.TestCase):
         namespace = load_diagnostic(source)
         namespace['DRY_RUN'] = True
         seen, replies = [], []
-        def prediction(model, text):
+        def prediction(model, text, dry_run=False, **kw):
             seen.append(text)
-            return 'ham', .9
-        namespace['predict'] = prediction
+            return replace(decide('ham',.9,model_version='sha256:'+'a'*64,text=text,**kw),dry_run=dry_run)
+        namespace['classify_and_decide'] = prediction
         async def reply(text):
             replies.append(text)
         for command in ['/test_spam пример', '/test_spam@TestBot пример', '/test_spam@TestBot\nпример']:

@@ -267,8 +267,11 @@ async def cmd_test_spam(message: types.Message):
 🏷️ Классификация: {label}
 📊 Уверенность: {confidence:.3f}
 
-{'🗑️ БУДЕТ УДАЛЕН' if label == 'spam' and confidence > SPAM_DELETE_THRESHOLD else ''}
-{'⚠️ ОТПРАВЛЕН НА МОДЕРАЦИЮ' if label == 'spam' and SPAM_MODERATE_THRESHOLD < confidence <= SPAM_DELETE_THRESHOLD else ''}
+Это проверка текста. Действия не выполнялись.
+{'🧪 Включён пробный режим (DRY_RUN).' if DRY_RUN else ''}
+
+{'🗑️ Рекомендация: удалить' if label == 'spam' and confidence > SPAM_DELETE_THRESHOLD else ''}
+{'⚠️ Рекомендация: передать на модерацию' if label == 'spam' and SPAM_MODERATE_THRESHOLD < confidence <= SPAM_DELETE_THRESHOLD else ''}
 {'✅ НЕ СПАМ' if label == 'ham' or confidence <= SPAM_MODERATE_THRESHOLD else ''}
     """
 

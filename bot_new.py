@@ -254,7 +254,8 @@ async def cmd_test_spam(message: types.Message):
         await message.reply("❌ Модель не загружена")
         return
 
-    text = message.text[len("/test_spam"):].strip()
+    parts = message.text.split(maxsplit=1)
+    text = parts[1].strip() if len(parts) == 2 else ""
     if not text:
         await message.reply("Используйте: /test_spam <текст для проверки>")
         return
@@ -282,7 +283,8 @@ async def cmd_add_spam(message: types.Message):
     if not message.from_user or not is_admin(message.from_user.id):
         await message.reply("⛔ Только администраторы могут дообучать бота.")
         return
-    text = message.text[len("/add_spam"):].strip()
+    parts = message.text.split(maxsplit=1)
+    text = parts[1].strip() if len(parts) == 2 else ""
     if not text:
         await message.reply("Используйте: /add_spam <сообщение>")
         return
@@ -294,7 +296,8 @@ async def cmd_add_ham(message: types.Message):
     if not message.from_user or not is_admin(message.from_user.id):
         await message.reply("⛔ Только администраторы могут дообучать бота.")
         return
-    text = message.text[len("/add_ham"):].strip()
+    parts = message.text.split(maxsplit=1)
+    text = parts[1].strip() if len(parts) == 2 else ""
     if not text:
         await message.reply("Используйте: /add_ham <сообщение>")
         return

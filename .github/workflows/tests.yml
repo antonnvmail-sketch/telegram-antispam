@@ -1,0 +1,40 @@
+name: Offline installation and tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  offline:
+    name: Python 3.12 on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2022]
+    env:
+      PYTHONUTF8: "1"
+      DRY_RUN: "true"
+      SHADOW_MODE_ENABLED: "false"
+      MONITOR_SC_ENABLED: "false"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+      - name: Install exact dependencies without package cache
+        run: python -m pip install --no-cache-dir -r requirements.txt
+      - name: Check dependency compatibility
+        run: python -m pip check
+      - name: Prepare synthetic demo without Telegram
+        run: python prepare_demo.py --db "${{ runner.temp }}/antispam-demo.sqlite" --model "${{ runner.temp }}/antispam-demo.joblib"
+      - name: Run offline tests
+        run: python -m unittest discover -s tests -v

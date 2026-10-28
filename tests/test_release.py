@@ -1,8 +1,5 @@
 """First-run checks using synthetic data, temporary paths and no Telegram network."""
-import asyncio
 from contextlib import closing
-import importlib.util
-import json
 import os
 from pathlib import Path
 import sqlite3
@@ -63,7 +60,7 @@ class ReleaseChecks(unittest.TestCase):
             env.update(PYTHONPATH=str(ROOT),TELEGRAM_TOKEN=str(123456789)+':'+'x'*35,
                        ADMIN_IDS='7',CHAT_IDS='-100',DATASET_PATH=str(tmp/'data.sqlite'),
                        MODEL_PATH=str(tmp/'model.joblib'),LOG_FILE=str(tmp/'bot.log'),
-                       DRY_RUN='true',SHADOW_MODE_ENABLED='false',MONITOR_SC_ENABLED='false',
+                       DRY_RUN='true',
                        SPAM_DELETE_THRESHOLD='0.7',SPAM_MODERATE_THRESHOLD='0.4')
             script = r'''
 import asyncio,runpy,sys,socket,sqlite3
@@ -113,12 +110,6 @@ print('Offline bot startup and dry run OK')
             self.assertIn('Set TELEGRAM_TOKEN',result.stderr)
             self.assertEqual(list(Path(tmp).iterdir()),[])
 
-    def test_existing_shadow_checks(self):
-        spec=importlib.util.spec_from_file_location('legacy_shadow_tests',ROOT/'tests/test_shadow.py')
-        module=importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-        asyncio.run(module.run_tests())
-
     def test_missing_model_with_config_is_actionable(self):
         with tempfile.TemporaryDirectory() as tmp:
             env=os.environ.copy()
@@ -129,15 +120,6 @@ print('Offline bot startup and dry run OK')
             self.assertNotEqual(result.returncode,0)
             self.assertIn('python prepare_demo.py',result.stderr)
             self.assertEqual(list(Path(tmp).iterdir()),[])
-
-    def test_optional_monitor_needs_opt_in_or_explicit_path(self):
-        from monitor_sc_antispam import record_batch
-        from unittest.mock import patch
-        with tempfile.TemporaryDirectory() as tmp,patch.dict(os.environ,{'MONITOR_SC_ENABLED':'false'}):
-            self.assertFalse(record_batch(True,False))
-            output=Path(tmp)/'result.json'
-            self.assertTrue(record_batch(True,False,path=output))
-            self.assertIsNotNone(json.loads(output.read_text())['last_success_at'])
 
 
 if __name__=='__main__':

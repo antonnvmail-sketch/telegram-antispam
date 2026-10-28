@@ -16,7 +16,6 @@ sys.path.insert(0, str(ROOT))
 from moderation_actions import execute_actions
 from decisions import decide
 from database import init_db, log_action
-from monitor_sc_antispam import record_batch
 
 
 class BadRequest(Exception): pass
@@ -47,10 +46,9 @@ class Capture:
 
 class ActionsTests(unittest.IsolatedAsyncioTestCase):
     async def run_case(self, *, message=None, label='spam', confidence=.9,
-                       journal_fail=None, sends=None, admins=(1, 2), perms=None,
-                       monitor_error=False, monitor_response=True):
+                       journal_fail=None, sends=None, admins=(1, 2), perms=None):
         self.message = message or Message()
-        self.actions, self.deliveries, self.batches = [], [], []
+        self.actions, self.deliveries = [], []
         self.logs = Capture()
         def write(action):
             self.actions.append(action)
@@ -62,16 +60,12 @@ class ActionsTests(unittest.IsolatedAsyncioTestCase):
         async def permissions(chat):
             if isinstance(perms, Exception): raise perms
             return perms if perms is not None else {'can_delete_messages': True}
-        def monitor(ok, failed):
-            self.batches.append((ok, failed))
-            if monitor_error: raise RuntimeError('synthetic monitor error')
-            return monitor_response
         return await execute_actions(
             message=self.message, decision_record=decide(label, confidence,
                 delete_threshold=.7, moderate_threshold=.4,
                 model_version='sha256:' + 'a'*64, text=self.message.text),
             journal_decision=lambda record: True, admins=admins,
-            send_message=send, write_action=write, monitor_batch=monitor,
+            send_message=send, write_action=write,
             check_permissions=permissions, logger=self.logs,
             rejected_errors=(BadRequest, Forbidden, NotFound), bad_request_error=BadRequest)
 
@@ -83,7 +77,6 @@ class ActionsTests(unittest.IsolatedAsyncioTestCase):
                                            'delete_attempted', 'deleted_spam'])
         self.assertLess(self.actions.index('deleted_spam'), self.actions.index('notification_sent'))
         self.assertEqual(self.message.deletes, 1)
-        self.assertEqual(self.batches, [(True, False)])
 
     async def test_every_journal_failure_preserves_telegram_result(self):
         for action in ['decision_delete', 'classified_spam', 'delete_attempted',
@@ -103,7 +96,7 @@ class ActionsTests(unittest.IsolatedAsyncioTestCase):
         for exc in (BadRequest(), Forbidden(), NotFound()):
             with self.subTest(error=type(exc).__name__):
                 result = await self.run_case(message=Message(error=exc))
-                self.assertEqual(result.shadow_action, 'delete_rejected')
+                self.assertEqual(result.outcome_action, 'delete_rejected')
                 self.assertNotIn('deleted_spam', self.actions)
                 self.assertEqual(self.deliveries, [])
                 self.assertEqual(self.message.deletes, 1)
@@ -112,7 +105,7 @@ class ActionsTests(unittest.IsolatedAsyncioTestCase):
         for exc in (TimeoutError(), OSError(), RuntimeError()):
             with self.subTest(error=type(exc).__name__):
                 result = await self.run_case(message=Message(error=exc))
-                self.assertEqual(result.shadow_action, 'delete_unknown')
+                self.assertEqual(result.outcome_action, 'delete_unknown')
                 self.assertEqual(self.deliveries, [])
                 self.assertEqual(self.message.deletes, 1)
                 self.assertNotIn('deleted_spam', self.actions)
@@ -126,22 +119,19 @@ class ActionsTests(unittest.IsolatedAsyncioTestCase):
         result = await self.run_case(sends={1: Forbidden()})
         self.assertEqual((result.deletion, result.notification), ('deleted', 'partial'))
         self.assertEqual(len(self.deliveries), 2)
-        self.assertEqual(self.batches, [(True, True)])
 
     async def test_notification_timeout_is_unknown(self):
         result = await self.run_case(sends={1: TimeoutError(), 2: TimeoutError()})
         self.assertEqual((result.deletion, result.notification), ('deleted', 'unknown'))
-        self.assertEqual(self.batches, [(False, True)])
 
     async def test_all_rejected_notifications(self):
         result = await self.run_case(sends={1: Forbidden(), 2: BadRequest()})
         self.assertEqual(result.notification, 'failed')
         self.assertEqual(result.deletion, 'deleted')
-        self.assertEqual(self.batches, [(False, True)])
 
     async def test_moderation_is_notification_only(self):
         result = await self.run_case(confidence=.6)
-        self.assertEqual(result.shadow_action, 'moderation_notification_sent')
+        self.assertEqual(result.outcome_action, 'moderation_notification_sent')
         self.assertEqual(self.message.deletes, 0)
         self.assertEqual(len(self.deliveries), 2)
 
@@ -157,7 +147,6 @@ class ActionsTests(unittest.IsolatedAsyncioTestCase):
     async def test_no_admins_is_skipped_not_delivered(self):
         result = await self.run_case(admins=())
         self.assertEqual(result.notification, 'skipped')
-        self.assertEqual(self.batches, [(False, False)])
 
     async def test_permission_diagnosis_distinguishes_unknown(self):
         for perms in ({'error': 'unavailable', 'can_delete_messages': False}, RuntimeError()):
@@ -171,15 +160,7 @@ class ActionsTests(unittest.IsolatedAsyncioTestCase):
                                      perms={'can_delete_messages': False})
         self.assertEqual(result.deletion, 'rejected')
         self.assertEqual(result.notification, 'sent')
-        self.assertEqual(self.batches, [])  # Original Monitor SC covers only two branches.
         self.assertTrue(all('НЕТ ПРАВ' in t for _, t in self.deliveries))
-
-    async def test_monitor_failure_is_separate(self):
-        for settings in ({'monitor_error': True}, {'monitor_response': False}):
-            with self.subTest(settings=settings):
-                result = await self.run_case(**settings)
-                self.assertEqual((result.deletion, result.notification), ('deleted', 'sent'))
-                self.assertTrue(any(r['stage'] == 'monitor' for r in self.logs.records))
 
     async def test_cancelled_deletion_is_unknown_and_cancellation_propagates(self):
         with self.assertRaises(asyncio.CancelledError):
@@ -193,19 +174,6 @@ class ActionsTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('deleted_spam', self.actions)
         self.assertIn('notification_unknown', self.actions)
         self.assertEqual(self.message.deletes, 1)
-
-    async def test_monitor_batch_timestamps_with_explicit_temporary_path(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / 'monitor.json'
-            self.assertFalse(record_batch(False, False, path=path))
-            self.assertFalse(path.exists())
-            self.assertTrue(record_batch(True, True, path=path))
-            state = json.loads(path.read_text())
-            self.assertEqual(state['last_success_at'], state['last_failure_at'])
-            self.assertTrue(record_batch(True, False, path=path))
-            state2 = json.loads(path.read_text())
-            self.assertEqual(state2['last_failure_at'], state['last_failure_at'])
-            self.assertGreaterEqual(state2['last_success_at'], state2['last_failure_at'])
 
     async def test_missing_sender(self):
         message = Message(); message.from_user = None
@@ -223,7 +191,7 @@ class ActionsTests(unittest.IsolatedAsyncioTestCase):
                 model_version='sha256:' + 'a'*64, text='synthetic test text'),
                 journal_decision=lambda record: True, admins=[1], send_message=send,
                 write_action=lambda action: log_action(db, 7, 'test', -100, 42, action, 'synthetic'),
-                monitor_batch=lambda *args: True, check_permissions=permissions,
+                check_permissions=permissions,
                 logger=Capture(), rejected_errors=(BadRequest, Forbidden, NotFound),
                 bad_request_error=BadRequest)
             with closing(sqlite3.connect(db)) as connection:
@@ -246,9 +214,8 @@ def extracted_handler(path, namespace):
 
 class HandlerTests(unittest.IsolatedAsyncioTestCase):
     async def invoke(self, path, label, confidence, *, journal_error=False, delete_error=None):
-        sent, observed, actions = [], [], []
+        sent, actions = [], []
         async def send(*args): sent.append(args)
-        async def observe(*args, **kwargs): observed.append(kwargs)
         async def permissions(*args): return {'can_delete_messages': True}
         def write(*args):
             actions.append(args[-2])
@@ -257,17 +224,17 @@ class HandlerTests(unittest.IsolatedAsyncioTestCase):
             predict=lambda *args: (label, confidence), DATASET_PATH='unused',
             classify_and_decide=lambda model, text, dry_run=False, **kw: decide(label, confidence,
                 model_version='sha256:' + 'a'*64, text=text, **kw),
-            record_decision=lambda *args: True, DRY_RUN=False, MONITOR_SC_ENABLED=True,
+            record_decision=lambda *args: True, DRY_RUN=False,
             log_action=write, SPAM_DELETE_THRESHOLD=.7, SPAM_MODERATE_THRESHOLD=.4,
             ADMIN_IDS=[1, 2], bot=SimpleNamespace(send_message=send),
-            monitor_record_batch=lambda *args: True, check_bot_permissions=permissions,
+            check_bot_permissions=permissions,
             TelegramBadRequest=BadRequest, TelegramForbiddenError=Forbidden,
-            TelegramNotFound=NotFound, execute_actions=execute_actions, observe_shadow=observe)
+            TelegramNotFound=NotFound, execute_actions=execute_actions)
         msg = Message(error=delete_error)
         await extracted_handler(path, ns)(msg)
-        return msg, sent, observed, actions
+        return msg, sent, actions
 
-    async def test_expected_actions_and_shadow_probability(self):
+    async def test_expected_actions_and_journal(self):
         for label, p in [('ham', .95), ('spam', .4), ('spam', .6), ('spam', .7), ('spam', .9)]:
             with self.subTest(label=label, p=p):
                 after = await self.invoke(ROOT / 'bot_new.py', label, p)
@@ -275,19 +242,19 @@ class HandlerTests(unittest.IsolatedAsyncioTestCase):
                 expected_notify = label == 'spam' and p > .4
                 self.assertEqual(after[0].deletes, int(expected_delete))
                 self.assertEqual(len(after[1]), 2 if expected_notify else 0)
-                self.assertEqual(after[2][0]['production_p_spam'], p if label == 'spam' else 1-p)
-                self.assertEqual(len(after[2]), 1)
+                self.assertIn('classified_' + label, after[2])
 
-    async def test_journal_failure_keeps_shadow_and_deletion(self):
-        msg, sent, observed, _ = await self.invoke(ROOT / 'bot_new.py', 'spam', .9, journal_error=True)
+    async def test_journal_failure_keeps_deletion(self):
+        msg, sent, actions = await self.invoke(ROOT / 'bot_new.py', 'spam', .9, journal_error=True)
         self.assertEqual(msg.deletes, 1)
         self.assertEqual(len(sent), 2)
-        self.assertEqual(observed[0]['production_action'], 'deleted')
+        # Stop database retries after its first failure; Telegram still succeeds.
+        self.assertEqual(actions, ['decision_delete'])
 
-    async def test_unknown_delete_reaches_shadow(self):
-        _, sent, observed, _ = await self.invoke(ROOT / 'bot_new.py', 'spam', .9, delete_error=TimeoutError())
+    async def test_unknown_delete_is_recorded(self):
+        _, sent, actions = await self.invoke(ROOT / 'bot_new.py', 'spam', .9, delete_error=TimeoutError())
         self.assertFalse(sent)
-        self.assertEqual(observed[0]['production_action'], 'delete_unknown')
+        self.assertIn('delete_unknown', actions)
 
     async def test_skipped_inputs_have_no_actions(self):
         for text in ['', '/command']:

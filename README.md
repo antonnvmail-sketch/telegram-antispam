@@ -1,5 +1,7 @@
 # Антиспам для ТГ · JUST MADE
 
+[English](README.en.md)
+
 **Открытый выпуск 1.0.1 · MIT.** Скачай, установи, обучи на примерах своего чата и пользуйся.
 
 [![Проверки Linux и Windows](https://github.com/antonnvmail-sketch/telegram-antispam/actions/workflows/tests.yml/badge.svg)](https://github.com/antonnvmail-sketch/telegram-antispam/actions/workflows/tests.yml)

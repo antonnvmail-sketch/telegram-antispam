@@ -1,4 +1,4 @@
-"""Moderation lifecycle with injected Telegram, journal and telemetry adapters."""
+"""Moderation lifecycle with injected Telegram and journal adapters."""
 import asyncio
 from dataclasses import dataclass, field
 import json
@@ -13,7 +13,7 @@ class ActionResult:
     dry_run: bool = False
 
     @property
-    def shadow_action(self):
+    def outcome_action(self):
         if self.dry_run:
             return {'delete':'would_delete_spam','moderate':'would_notify_moderators',
                     'allow':'would_allow'}[self.decision]
@@ -27,7 +27,7 @@ class ActionResult:
 
 async def execute_actions(*, message, decision_record, journal_decision,
                           admins, send_message, write_action,
-                          monitor_batch, check_permissions, logger,
+                          check_permissions, logger,
                           rejected_errors, bad_request_error):
     """Preserve filtering thresholds; never retry an uncertain Telegram action."""
     decision = decision_record.action
@@ -54,7 +54,7 @@ async def execute_actions(*, message, decision_record, journal_decision,
             logger.error(json.dumps({**context, 'stage': 'journal', 'status': 'failed',
                 'action': action, 'error_type': type(exc).__name__}, sort_keys=True))
 
-    async def notify(text, *, monitor=True):
+    async def notify(text):
         sent = failed = unknown = 0
         for admin_id in admins:
             event('notification', 'attempted', 'notification_attempted')
@@ -82,19 +82,10 @@ async def execute_actions(*, message, decision_record, journal_decision,
         event('notification_batch', result.notification,
               'notification_batch_' + result.notification,
               sent=sent, rejected=failed, unknown=unknown)
-        if monitor:
-            try:
-                recorded = monitor_batch(bool(sent), bool(failed or unknown))
-                if recorded is False and admins:
-                    logger.error(json.dumps({**context, 'stage': 'monitor', 'status': 'failed'}))
-            except Exception as exc:
-                logger.error(json.dumps({**context, 'stage': 'monitor', 'status': 'failed',
-                    'error_type': type(exc).__name__}))
-
     event('decision', 'selected', 'decision_' + decision)
     event('classification', 'completed', 'classified_' + label)
     if result.dry_run:
-        event('execution', 'dry_run', result.shadow_action)
+        event('execution', 'dry_run', result.outcome_action)
         return result
     user = message.from_user
     sender = user.username if user and user.username else user.id if user else None
@@ -132,7 +123,7 @@ async def execute_actions(*, message, decision_record, journal_decision,
                 event('permissions', 'unknown', 'permissions_unknown')
             elif perms.get('can_delete_messages') is False:
                 await notify('❌ НЕ МОГУ УДАЛИТЬ СПАМ - НЕТ ПРАВ!' + suffix
-                             + '\n\nДайте боту права администратора!', monitor=False)
+                             + '\n\nДайте боту права администратора!')
     elif decision == 'moderate':
         await notify(f'⚠️ ПОДОЗРЕНИЕ НА СПАМ (confidence: {confidence:.3f}):' + suffix)
     return result

@@ -174,19 +174,18 @@ class IntegrationTests(unittest.IsolatedAsyncioTestCase):
         with tempfile.TemporaryDirectory() as tmp:
             db=str(Path(tmp)/'test.sqlite');init_db(db)
             for p in [.1,.5,.6,.7,.9]:
-                sent=[];shadow=[]
+                sent=[]
                 async def send(*args):sent.append(args)
-                async def observe(*args,**kwargs):shadow.append(kwargs)
                 async def permissions(*args):return {'can_delete_messages':True}
                 logger=Capture()
                 ns=dict(model=LoadedModel(Pipeline(p),VERSION),logger=SimpleNamespace(info=lambda *a:None,error=lambda *a:None,warning=lambda *a:None,debug=lambda *a:None),
                     action_logger=logger,DATASET_PATH=db,log_decision=log_decision,persist_decision=persist_decision,
                     classify_and_decide=classify_and_decide,diagnostic_text=diagnostic_text,
-                    DRY_RUN=False,MONITOR_SC_ENABLED=True,SPAM_DELETE_THRESHOLD=.7,SPAM_MODERATE_THRESHOLD=.4,is_admin=lambda uid:True,
+                    DRY_RUN=False,SPAM_DELETE_THRESHOLD=.7,SPAM_MODERATE_THRESHOLD=.4,is_admin=lambda uid:True,
                     execute_actions=execute_actions,log_action=lambda *args:None,
-                    ADMIN_IDS=[1],bot=SimpleNamespace(send_message=send),monitor_record_batch=lambda *a:True,
+                    ADMIN_IDS=[1],bot=SimpleNamespace(send_message=send),
                     check_bot_permissions=permissions,TelegramBadRequest=BadRequest,TelegramForbiddenError=Forbidden,
-                    TelegramNotFound=NotFound,observe_shadow=observe)
+                    TelegramNotFound=NotFound)
                 exec(extract_functions('filter_message','cmd_test_spam','record_decision'),ns)
                 normal=Message();await ns['filter_message'](normal)
                 diagnostic=Message();diagnostic.text='/test_spam '+normal.text
@@ -204,7 +203,6 @@ class IntegrationTests(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual(rows[0][field],rows[1][field],field)
                 self.assertIn(rows[0]['model_version'],replies[0])
                 self.assertEqual(normal.deletes,int(rows[1]['action']=='delete'))
-                self.assertAlmostEqual(shadow[0]['production_p_spam'],rows[1]['p_spam'])
 
     async def test_decision_journal_failure_preserves_action_and_correlation(self):
         msg=Message();d=decision();capture=Capture();writes=[]
@@ -212,7 +210,7 @@ class IntegrationTests(unittest.IsolatedAsyncioTestCase):
         async def permissions(*args):return {}
         result=await execute_actions(message=msg,decision_record=d,
             journal_decision=lambda record:False,admins=[1],send_message=send,
-            write_action=writes.append,monitor_batch=lambda *a:True,
+            write_action=writes.append,
             check_permissions=permissions,logger=capture,
             rejected_errors=(BadRequest,Forbidden,NotFound),bad_request_error=BadRequest)
         self.assertEqual(result.deletion,'deleted')

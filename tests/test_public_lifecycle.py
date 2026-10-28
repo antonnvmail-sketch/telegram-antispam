@@ -25,8 +25,6 @@ class PublicLifecycle(unittest.IsolatedAsyncioTestCase):
             module=importlib.util.module_from_spec(spec)
             spec.loader.exec_module(module)
         self.assertTrue(module.DRY_RUN)
-        self.assertFalse(module.MONITOR_SC_ENABLED)
-        self.assertFalse(module.SHADOW_MODE_ENABLED)
 
     async def test_real_aiogram_error_types_without_requests(self):
         from aiogram.exceptions import (TelegramBadRequest,TelegramForbiddenError,TelegramNotFound,
@@ -46,12 +44,12 @@ class PublicLifecycle(unittest.IsolatedAsyncioTestCase):
             record=decide('spam',.99,delete_threshold=.7,moderate_threshold=.4,model_version='sha256:'+'a'*64,text='synthetic')
             result=await execute_actions(message=SimpleNamespace(chat=SimpleNamespace(id=-100),message_id=1,
                 from_user=None,text='synthetic',delete=delete),decision_record=record,journal_decision=lambda r:True,
-                admins=[7],send_message=forbidden,write_action=lambda action:None,monitor_batch=lambda *a:None,
+                admins=[7],send_message=forbidden,write_action=lambda action:None,
                 check_permissions=permissions,logger=logging.getLogger('test'),
                 rejected_errors=(TelegramBadRequest,TelegramForbiddenError,TelegramNotFound),bad_request_error=TelegramBadRequest)
             self.assertEqual(result.deletion,expected)
 
-    async def test_dry_run_persists_without_telegram_or_monitor(self):
+    async def test_dry_run_persists_without_telegram(self):
         with tempfile.TemporaryDirectory() as tmp:
             db=str(Path(tmp)/'test.sqlite');init_db(db)
             def forbidden(*args,**kwargs):raise AssertionError('External action in dry-run')
@@ -66,7 +64,7 @@ class PublicLifecycle(unittest.IsolatedAsyncioTestCase):
                         write_record=lambda data,**context:log_decision(db,data,**context),logger=logging.getLogger('test')),
                     admins=[7],send_message=async_forbidden,
                     write_action=lambda event:log_action(db,7,'synthetic',-100,1,event,msg.text),
-                    monitor_batch=forbidden,check_permissions=async_forbidden,logger=logging.getLogger('test'),
+                    check_permissions=async_forbidden,logger=logging.getLogger('test'),
                     rejected_errors=(ValueError,),bad_request_error=ValueError)
                 self.assertTrue(result.dry_run)
                 self.assertEqual(result.decision,action)
@@ -86,7 +84,7 @@ class PublicLifecycle(unittest.IsolatedAsyncioTestCase):
             result=await execute_actions(message=SimpleNamespace(chat=SimpleNamespace(id=-100),message_id=2),
                 decision_record=d,journal_decision=lambda record:persist_decision(record,chat_id=-100,message_id=2,
                     source='filter',write_record=lambda data,**ctx:log_decision(db,data,**ctx),logger=logging.getLogger('test')),
-                admins=[],send_message=forbidden,write_action=broken,monitor_batch=broken,
+                admins=[],send_message=forbidden,write_action=broken,
                 check_permissions=forbidden,logger=logging.getLogger('test'),rejected_errors=(ValueError,),bad_request_error=ValueError)
             self.assertTrue(result.journal_failures)
             with closing(sqlite3.connect(db)) as conn:

@@ -9,15 +9,7 @@ ADMIN_IDS = [int(x) for x in os.getenv("ADMIN_IDS", "").split(",") if x]
 CHAT_IDS = [int(x) for x in os.getenv("CHAT_IDS", "").split(",") if x]
 DATASET_PATH = os.getenv("DATASET_PATH", "dataset.sqlite")
 MODEL_PATH = os.getenv("MODEL_PATH", "model.joblib")
-MONITOR_SC_ENABLED = os.getenv("MONITOR_SC_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
 DRY_RUN = os.getenv("DRY_RUN", "true").strip().lower() in {"1", "true", "yes", "on"}
-
-# Полностью пассивная экспериментальная модель. Любая ошибка должна быть fail-open.
-SHADOW_MODE_ENABLED = os.getenv("SHADOW_MODE_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
-SHADOW_MODEL_PATH = os.getenv("SHADOW_MODEL_PATH", "models/shadow.joblib")
-SHADOW_MODEL_VERSION = os.getenv("SHADOW_MODEL_VERSION", "custom")
-SHADOW_DB_PATH = os.getenv("SHADOW_DB_PATH", DATASET_PATH)
-SHADOW_DB_TIMEOUT_SECONDS = float(os.getenv("SHADOW_DB_TIMEOUT_SECONDS", "0.25"))
 
 # Порог для удаления и модерации
 SPAM_DELETE_THRESHOLD = float(os.getenv("SPAM_DELETE_THRESHOLD", 0.7))

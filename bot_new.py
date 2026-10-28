@@ -1,21 +1,19 @@
-from monitor_sc_antispam import record_batch as monitor_record_batch
 import asyncio
 import logging
 from logging.handlers import RotatingFileHandler
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError, TelegramNotFound
-from config import TELEGRAM_TOKEN, ADMIN_IDS, CHAT_IDS, DATASET_PATH, MODEL_PATH, SPAM_DELETE_THRESHOLD, SPAM_MODERATE_THRESHOLD, LOG_FILE, LOG_MAX_BYTES, LOG_BACKUP_COUNT, SHADOW_MODE_ENABLED, SHADOW_MODEL_PATH, SHADOW_MODEL_VERSION, SHADOW_DB_PATH, SHADOW_DB_TIMEOUT_SECONDS
+from config import TELEGRAM_TOKEN, ADMIN_IDS, CHAT_IDS, DATASET_PATH, MODEL_PATH, SPAM_DELETE_THRESHOLD, SPAM_MODERATE_THRESHOLD, LOG_FILE, LOG_MAX_BYTES, LOG_BACKUP_COUNT
 from database import init_db, add_message, get_all_messages, log_action, log_decision
 from ml import train_model, evaluate_model
 from moderation import is_admin
-from shadow import ShadowRuntime, admin_command_allowed
 from moderation_actions import execute_actions
 from decisions import load_versioned_model, classify_and_decide, persist_decision, diagnostic_text
 import os
 import io
 from import_dataset import import_txt_to_db
-from config import DRY_RUN, MONITOR_SC_ENABLED, validate_runtime
+from config import DRY_RUN, validate_runtime
 
 validate_runtime()
 
@@ -99,72 +97,11 @@ async def check_bot_permissions(chat_id: int) -> dict:
 init_db(DATASET_PATH)
 model = load_versioned_model(MODEL_PATH)
 
-shadow_runtime = ShadowRuntime.load(
-    enabled=SHADOW_MODE_ENABLED,
-    model_path=SHADOW_MODEL_PATH,
-    model_version=SHADOW_MODEL_VERSION,
-    database_path=SHADOW_DB_PATH,
-    database_timeout=SHADOW_DB_TIMEOUT_SECONDS,
-)
-
 def record_decision(message, decision, source):
     return persist_decision(
         decision, chat_id=message.chat.id, message_id=message.message_id, source=source,
         write_record=lambda record, **context: log_decision(DATASET_PATH, record, **context),
         logger=action_logger,
-    )
-
-async def observe_shadow(message: types.Message, *, text: str, source_kind: str, production_label=None, production_p_spam=None, production_action="production_skipped", production_skipped=True):
-    user_id = message.from_user.id if message.from_user else 0
-    username = message.from_user.username if message.from_user and message.from_user.username else ""
-    content_type = message.content_type.value if hasattr(message.content_type, "value") else str(message.content_type)
-    await shadow_runtime.observe(
-        chat_id=message.chat.id, user_id=user_id, username=username, message_id=message.message_id,
-        message_type=content_type, source_kind=source_kind, text=text, has_caption=bool(message.caption),
-        production_label=production_label, production_p_spam=production_p_spam,
-        production_action=production_action, production_skipped=production_skipped,
-    )
-
-class ShadowPassiveCoverageMiddleware(BaseMiddleware):
-    async def __call__(self, handler, event, data):
-        result = await handler(event, data)
-        if isinstance(event, types.Message) and event.chat.id in CHAT_IDS:
-            if event.text and event.text.startswith('/'):
-                await observe_shadow(event, text=event.text, source_kind="slash_message")
-            elif event.caption:
-                await observe_shadow(event, text=event.caption, source_kind="caption")
-        return result
-
-dp.message.outer_middleware(ShadowPassiveCoverageMiddleware())
-
-@dp.message(Command("shadow_status"))
-async def cmd_shadow_status(message: types.Message):
-    user_id = message.from_user.id if message.from_user else None
-    if not admin_command_allowed(user_id, ADMIN_IDS):
-        await message.reply("⛔ Только для администраторов.")
-        return
-    stats = await shadow_runtime.stats()
-    await message.reply(
-        f"Shadow enabled: {shadow_runtime.enabled}\n"
-        f"Model version: {shadow_runtime.model_version}\n"
-        f"Loaded: {shadow_runtime.loaded}\n"
-        f"Predictions: {stats.get('total', 0)}\n"
-        f"Disagreements: {stats.get('disagree', 0)}\n"
-        f"Errors: {stats.get('stored_errors', 0) + stats.get('db_errors', 0)}"
-    )
-
-@dp.message(Command("shadow_stats"))
-async def cmd_shadow_stats(message: types.Message):
-    user_id = message.from_user.id if message.from_user else None
-    if not admin_command_allowed(user_id, ADMIN_IDS):
-        await message.reply("⛔ Только для администраторов.")
-        return
-    stats = await shadow_runtime.stats()
-    await message.reply(
-        f"Total: {stats.get('total', 0)}\nAgree: {stats.get('agree', 0)}\n"
-        f"Disagree: {stats.get('disagree', 0)}\n"
-        f"Prod spam / shadow ham: {stats.get('prod_spam_shadow_ham', 0)}\n"
-        f"Prod ham / shadow spam: {stats.get('prod_ham_shadow_spam', 0)}"
     )
 
 @dp.message(Command("start"))
@@ -395,7 +332,6 @@ async def filter_message(message: types.Message):
             moderate_threshold=SPAM_MODERATE_THRESHOLD, dry_run=DRY_RUN,
         )
         label, confidence = decision.label, decision.confidence
-        production_p_spam = decision.p_spam
         logger.info(f"Message classified as '{label}' with confidence {confidence:.3f} from user {from_user_id}")
     except Exception as e:
         logger.error(f"Error during message classification: {e}")
@@ -403,7 +339,7 @@ async def filter_message(message: types.Message):
 
     user_id_safe = from_user_id if from_user_id is not None else 0
 
-    result = await execute_actions(
+    await execute_actions(
         message=message, decision_record=decision,
         journal_decision=lambda record: record_decision(message, record, "filter"),
         admins=ADMIN_IDS, send_message=bot.send_message,
@@ -411,24 +347,10 @@ async def filter_message(message: types.Message):
             DATASET_PATH, user_id_safe, from_user_username,
             message.chat.id, message.message_id, action, message.text,
         ),
-        monitor_batch=monitor_record_batch if MONITOR_SC_ENABLED else lambda *args: None,
         check_permissions=check_bot_permissions, logger=action_logger,
         rejected_errors=(TelegramBadRequest, TelegramForbiddenError, TelegramNotFound),
         bad_request_error=TelegramBadRequest,
     )
-    production_action = result.shadow_action
-
-    await observe_shadow(
-        message, text=message.text, source_kind="text", production_label=label,
-        production_p_spam=production_p_spam, production_action=production_action, production_skipped=False,
-    )
-
-@dp.edited_message(F.chat.id.in_(CHAT_IDS))
-async def shadow_edited_message(message: types.Message):
-    text = message.text or message.caption
-    if text and text.strip():
-        await observe_shadow(message, text=text, source_kind="edited_message")
-
 if __name__ == "__main__":
     async def main():
         loop = asyncio.get_running_loop()
@@ -441,7 +363,6 @@ if __name__ == "__main__":
         logger.info(f"Delete threshold: {SPAM_DELETE_THRESHOLD}")
         logger.info(f"Moderate threshold: {SPAM_MODERATE_THRESHOLD}")
         logger.warning("Antispam version=%s model_version=%s dry_run=%s", APP_VERSION, model.version, DRY_RUN)
-        logger.warning(f"Shadow enabled={shadow_runtime.enabled}, loaded={shadow_runtime.loaded}, version={shadow_runtime.model_version}")
         try:
             await dp.start_polling(bot)
         finally:

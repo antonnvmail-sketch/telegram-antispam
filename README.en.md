@@ -4,7 +4,7 @@
 
 A self-hosted Telegram bot that helps group administrators moderate text messages. It uses TF-IDF and logistic regression to classify messages as spam or legitimate conversation (`ham`). In active mode, it deletes messages classified as spam above the deletion threshold and sends suspicious messages to administrators.
 
-**Public release: 1.0.1 · License: MIT.**
+**Public release: 1.0.2 · License: MIT.**
 
 [Download a release](https://github.com/antonnvmail-sketch/telegram-antispam/releases) · [Project website (Russian)](https://justmade.su/antispam/) · [Changelog (Russian)](CHANGELOG.md) · [Report an issue](https://github.com/antonnvmail-sketch/telegram-antispam/issues)
 
@@ -101,6 +101,12 @@ Use `/status`, `/check_permissions`, and `/test_spam your message` to inspect se
 | `LOG_FILE`, `LOG_MAX_BYTES`, `LOG_BACKUP_COUNT` | Local log rotation settings |
 
 An action requires the predicted label to be `spam` and its confidence to be **strictly greater** than the corresponding threshold. Deletion takes priority over notification. A moderation threshold of `0.4` does not mean that every message with P(spam) above 0.4 triggers a notification: `spam` must first be the winning label. Scores are not guaranteed to be calibrated probabilities.
+
+## New in 1.0.2
+
+After `/add_spam` and `/add_ham`, and in `/status`, the bot reports how many added examples are not included in the loaded model. Imports and duplicate additions count too. The count survives a restart and returns to zero after successful training on the current dataset. Older models show an unknown count until successfully retrained with this version. This reminder is not a measure of model quality; manual edits or deletions can require retraining even when the count is zero.
+
+A newly trained model replaces the previous file only after saving completes. A failed write preserves the old file. This release also adds this English guide and simplifies the standalone bot.
 
 ## Train for your community
 

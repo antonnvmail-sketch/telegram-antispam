@@ -14,7 +14,7 @@ class CommandArguments(unittest.TestCase):
             handler.decorator_list = []
             stored, replies = [], []
             namespace = {'types': SimpleNamespace(Message=object), 'is_admin': lambda uid: True,
-                         'DATASET_PATH': 'unused', 'add_message': lambda path, category, text: stored.append((category, text))}
+                         'training_status': lambda: 'Training reminder', 'DATASET_PATH': 'unused', 'add_message': lambda path, category, text: stored.append((category, text))}
             exec(compile(ast.fix_missing_locations(ast.Module(body=[handler], type_ignores=[])), '<handler>', 'exec'), namespace)
             async def reply(text):
                 replies.append(text)

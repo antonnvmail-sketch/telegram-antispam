@@ -6,7 +6,7 @@ from aiogram.filters import Command
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError, TelegramNotFound
 from config import TELEGRAM_TOKEN, ADMIN_IDS, CHAT_IDS, DATASET_PATH, MODEL_PATH, SPAM_DELETE_THRESHOLD, SPAM_MODERATE_THRESHOLD, LOG_FILE, LOG_MAX_BYTES, LOG_BACKUP_COUNT
 from database import init_db, add_message, get_all_messages, log_action, log_decision
-from ml import train_model, evaluate_model
+from ml import train_model, evaluate_model, pending_training_count
 from moderation import is_admin
 from moderation_actions import execute_actions
 from decisions import load_versioned_model, classify_and_decide, persist_decision, diagnostic_text
@@ -18,7 +18,7 @@ from config import DRY_RUN, validate_runtime
 validate_runtime()
 
 # Логирование в файл и stdout
-APP_VERSION = "1.0.1"
+APP_VERSION = "1.0.2"
 
 logger = logging.getLogger(__name__)
 action_logger = logging.getLogger("antispam.actions")
@@ -104,6 +104,18 @@ def record_decision(message, decision, source):
         logger=action_logger,
     )
 
+def training_status(data=None):
+    if data is None:
+        data = get_all_messages(DATASET_PATH)
+    pending = pending_training_count(getattr(model, 'pipeline', None), data)
+    if pending is None:
+        return 'Новых примеров после обучения: неизвестно. Выполните /train, чтобы начать учёт.'
+    text = f'Новых примеров после обучения: {pending}.'
+    if pending:
+        text += ' Чтобы применить их, выполните /train.'
+    return text
+
+
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
     await message.reply("🤖 Я антиспам-бот. Добавьте меня в группу и дайте права администратора. Для справки используйте /help.")
@@ -154,6 +166,7 @@ async def cmd_status(message: types.Message):
     # Проверка датасета
     data = get_all_messages(DATASET_PATH)
     status_info.append(f"📊 В датасете: {len(data)} сообщений")
+    status_info.append(training_status(data))
 
     # Проверка конфигурации
     status_info.append(f"🎯 Порог удаления: {SPAM_DELETE_THRESHOLD}")
@@ -234,7 +247,7 @@ async def cmd_add_spam(message: types.Message):
         await message.reply("Используйте: /add_spam <сообщение>")
         return
     add_message(DATASET_PATH, "spam", text)
-    await message.reply("✅ Сообщение добавлено в датасет как spam. Для применения обучите модель командой /train.")
+    await message.reply("✅ Сообщение добавлено в датасет как spam.\n" + training_status())
 
 @dp.message(Command("add_ham"))
 async def cmd_add_ham(message: types.Message):
@@ -247,7 +260,7 @@ async def cmd_add_ham(message: types.Message):
         await message.reply("Используйте: /add_ham <сообщение>")
         return
     add_message(DATASET_PATH, "ham", text)
-    await message.reply("✅ Сообщение добавлено в датасет как ham. Для применения обучите модель командой /train.")
+    await message.reply("✅ Сообщение добавлено в датасет как ham.\n" + training_status())
 
 @dp.message(Command("import_data"))
 async def cmd_import_data(message: types.Message):

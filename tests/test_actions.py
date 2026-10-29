@@ -98,7 +98,8 @@ class ActionsTests(unittest.IsolatedAsyncioTestCase):
                 result = await self.run_case(message=Message(error=exc))
                 self.assertEqual(result.outcome_action, 'delete_rejected')
                 self.assertNotIn('deleted_spam', self.actions)
-                self.assertEqual(self.deliveries, [])
+                self.assertTrue(self.deliveries)
+                self.assertTrue(all('отклонил' in text for _,text in self.deliveries))
                 self.assertEqual(self.message.deletes, 1)
 
     async def test_uncertain_delete_never_retries_or_announces_success(self):
@@ -106,14 +107,16 @@ class ActionsTests(unittest.IsolatedAsyncioTestCase):
             with self.subTest(error=type(exc).__name__):
                 result = await self.run_case(message=Message(error=exc))
                 self.assertEqual(result.outcome_action, 'delete_unknown')
-                self.assertEqual(self.deliveries, [])
+                self.assertTrue(self.deliveries)
+                self.assertTrue(all('неизвестен' in text for _,text in self.deliveries))
                 self.assertEqual(self.message.deletes, 1)
                 self.assertNotIn('deleted_spam', self.actions)
 
     async def test_false_telegram_response_is_not_success(self):
         result = await self.run_case(message=Message(response=False))
         self.assertEqual(result.deletion, 'unknown')
-        self.assertEqual(self.deliveries, [])
+        self.assertTrue(self.deliveries)
+        self.assertTrue(all('неизвестен' in text for _,text in self.deliveries))
 
     async def test_partial_notifications_do_not_change_deletion(self):
         result = await self.run_case(sends={1: Forbidden()})
@@ -152,15 +155,16 @@ class ActionsTests(unittest.IsolatedAsyncioTestCase):
         for perms in ({'error': 'unavailable', 'can_delete_messages': False}, RuntimeError()):
             with self.subTest(perms=str(perms)):
                 await self.run_case(message=Message(error=BadRequest()), perms=perms)
-                self.assertFalse(self.deliveries)
-                self.assertIn('permissions_unknown', self.actions)
+                self.assertTrue(self.deliveries)
+                self.assertTrue(all('Telegram отклонил удаление' in text for _,text in self.deliveries))
+                self.assertNotIn('deleted_spam',self.actions)
 
     async def test_confirmed_missing_permission_notification(self):
         result = await self.run_case(message=Message(error=BadRequest()),
                                      perms={'can_delete_messages': False})
         self.assertEqual(result.deletion, 'rejected')
         self.assertEqual(result.notification, 'sent')
-        self.assertTrue(all('НЕТ ПРАВ' in t for _, t in self.deliveries))
+        self.assertTrue(all('права' in t.lower() for _, t in self.deliveries))
 
     async def test_cancelled_deletion_is_unknown_and_cancellation_propagates(self):
         with self.assertRaises(asyncio.CancelledError):
@@ -217,6 +221,7 @@ class HandlerTests(unittest.IsolatedAsyncioTestCase):
         sent, actions = [], []
         async def send(*args): sent.append(args)
         async def permissions(*args): return {'can_delete_messages': True}
+        async def review_send(admin,chat,message,text,model,**kwargs):return await send(admin,text)
         def write(*args):
             actions.append(args[-2])
             if journal_error: raise sqlite3.OperationalError('synthetic')
@@ -227,6 +232,7 @@ class HandlerTests(unittest.IsolatedAsyncioTestCase):
             record_decision=lambda *args: True, DRY_RUN=False,
             log_action=write, SPAM_DELETE_THRESHOLD=.7, SPAM_MODERATE_THRESHOLD=.4,
             ADMIN_IDS=[1, 2], bot=SimpleNamespace(send_message=send),
+            review_service=SimpleNamespace(send=review_send,tickets=SimpleNamespace(record_auto_delete=lambda *args:None)),
             check_bot_permissions=permissions,
             TelegramBadRequest=BadRequest, TelegramForbiddenError=Forbidden,
             TelegramNotFound=NotFound, execute_actions=execute_actions)
@@ -253,7 +259,8 @@ class HandlerTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_unknown_delete_is_recorded(self):
         _, sent, actions = await self.invoke(ROOT / 'bot_new.py', 'spam', .9, delete_error=TimeoutError())
-        self.assertFalse(sent)
+        self.assertTrue(sent)
+        self.assertTrue(all('неизвестен' in text for _,text in sent))
         self.assertIn('delete_unknown', actions)
 
     async def test_skipped_inputs_have_no_actions(self):

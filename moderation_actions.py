@@ -28,7 +28,7 @@ class ActionResult:
 async def execute_actions(*, message, decision_record, journal_decision,
                           admins, send_message, write_action,
                           check_permissions, logger,
-                          rejected_errors, bad_request_error):
+                          rejected_errors, bad_request_error, record_deletion=None):
     """Preserve filtering thresholds; never retry an uncertain Telegram action."""
     decision = decision_record.action
     label, confidence = decision_record.label, decision_record.confidence
@@ -92,7 +92,7 @@ async def execute_actions(*, message, decision_record, journal_decision,
     suffix = f'\n\n{message.text}\n\nОт: @{sender}\nЧат: {message.chat.id}'
     if decision == 'delete':
         event('deletion', 'attempted', 'delete_attempted')
-        bad_request = False
+        deletion_error = None
         try:
             response = await message.delete()
         except asyncio.CancelledError:
@@ -101,29 +101,34 @@ async def execute_actions(*, message, decision_record, journal_decision,
             raise
         except rejected_errors as exc:
             result.deletion = 'rejected'
-            bad_request = isinstance(exc, bad_request_error)
+            deletion_error = exc
             event('deletion', 'rejected', 'delete_rejected', error_type=type(exc).__name__)
         except Exception as exc:
             result.deletion = 'unknown'
             event('deletion', 'unknown', 'delete_unknown', error_type=type(exc).__name__)
         else:
             result.deletion = 'deleted' if response is True else 'unknown'
+            if response is True and record_deletion is not None:
+                try:record_deletion()
+                except Exception as exc:
+                    result.journal_failures.append('deletion_counter')
+                    logger.error(json.dumps({**context,'stage':'deletion_counter','status':'failed','error_type':type(exc).__name__}))
             event('deletion', result.deletion,
                   'deleted_spam' if result.deletion == 'deleted' else 'delete_unknown')
 
         # Notifications are outside the deletion try: errors cannot undo its result.
         if result.deletion == 'deleted':
             await notify(f'🗑️ УДАЛЕН СПАМ (confidence: {confidence:.3f}):' + suffix)
-        elif bad_request:
-            try:
-                perms = await check_permissions(message.chat.id)
-            except Exception as exc:
-                perms = {'error': type(exc).__name__}
-            if 'error' in perms:
-                event('permissions', 'unknown', 'permissions_unknown')
-            elif perms.get('can_delete_messages') is False:
-                await notify('❌ НЕ МОГУ УДАЛИТЬ СПАМ - НЕТ ПРАВ!' + suffix
-                             + '\n\nДайте боту права администратора!')
+        else:
+            from admin_review import deletion_failure,source_link
+            status=(deletion_failure(deletion_error)[1] if deletion_error is not None else
+                    'Результат удаления неизвестен. Проверьте чат; автоматического повтора не будет.')
+            title=str(getattr(message.chat,'title',None) or message.chat.id)[:160]
+            text=f'{status}\nЧат: {title} ({message.chat.id})\nСообщение: {message.message_id}\n\n{message.text[:2400]}'
+            if len(message.text)>2400:text+='\n[Текст сокращён]'
+            link=source_link(message.chat.id,message.message_id)
+            if link:text+='\n\nПроверить сообщение: '+link
+            await notify(text)
     elif decision == 'moderate':
         await notify(f'⚠️ ПОДОЗРЕНИЕ НА СПАМ (confidence: {confidence:.3f}):' + suffix)
     return result

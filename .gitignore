@@ -37,3 +37,7 @@ __pycache__/
 .idea/
 .DS_Store
 Thumbs.db
+
+# Private runtime status and administrator review database
+.operations/
+*.admin-review.sqlite*

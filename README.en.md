@@ -4,7 +4,7 @@
 
 A self-hosted Telegram bot that helps group administrators moderate text messages. It uses TF-IDF and logistic regression to classify messages as spam or legitimate conversation (`ham`). In active mode, it deletes messages classified as spam above the deletion threshold and sends suspicious messages to administrators.
 
-**Public release: 1.0.2 · License: MIT.**
+**Version: 1.0.3 · License: MIT.**
 
 [Download a release](https://github.com/antonnvmail-sketch/telegram-antispam/releases) · [Project website (Russian)](https://justmade.su/antispam/) · [Changelog (Russian)](CHANGELOG.md) · [Report an issue](https://github.com/antonnvmail-sketch/telegram-antispam/issues)
 
@@ -15,6 +15,21 @@ The public repository includes synthetic demonstration messages, not the author'
 **English moderation quality has not been evaluated.** The bot can accept English text, but it does not translate messages or understand unfamiliar words through a language model. Its predictions depend on the vocabulary learned from training examples. The supplied demonstration data is in Russian; it is not a ready-to-use English spam filter. For an English-speaking or multilingual group, provide representative spam and legitimate messages in the languages used there, then evaluate on separate examples.
 
 This document explains installation in English. The bot's current replies and help messages are primarily in Russian.
+
+## New in 1.0.3
+
+- Private administrator cards with Delete spam, Keep, and Report mistaken deletion buttons. Use `/review` as a reply in a configured group to request a card.
+- Group title, a source-message link where supported, and clear action outcomes and errors. Buttons expire after 24 hours and are bound to their recipient, notification and source message. Repeated actions are blocked.
+- Feedback and original evidence are stored separately from training data. No automatic retraining is performed; reporting an error does not restore a deleted message.
+- `/stat` covers the current and two previous calendar months in Moscow time. It counts automatic deletions, confirmed button deletions, mistaken-deletion reports and dismissed suspicions. Partial periods and unavailable history are explicit; these are action counters, not model accuracy.
+- `/stat_export` exports aggregate CSV without message text or identifiers; `/review_stats` counts administrator answers. Help is updated.
+- Single-instance protection and optional systemd restart/watchdog and health checks. Administrators receive state-change alerts; a quiet group is not treated as an outage.
+
+`DRY_RUN=true` disables action cards and all review-button actions, including old cards. Classification policy and thresholds are unchanged. Store the separate `<DATASET_PATH>.admin-review.sqlite` evidence database and `.operations/` state privately.
+
+## Optional service setup
+
+On a host with user systemd, run `python setup_service.py` to preview the units and `python setup_service.py --write` to create them. Existing units are never overwritten. Stop any manually started instance before `systemctl --user daemon-reload` and `systemctl --user enable --now antispam.service antispam-health.timer`. An administrator must enable linger for the selected user if startup without login is required. See the [Russian service instructions](README.md#автозапуск-и-контроль-состояния-необязательно) for operation and service limits. Neither a server restart nor a Telegram outage guarantees that an alert can be delivered through the same bot.
 
 ## Features and limits
 
@@ -102,7 +117,7 @@ Use `/status`, `/check_permissions`, and `/test_spam your message` to inspect se
 
 An action requires the predicted label to be `spam` and its confidence to be **strictly greater** than the corresponding threshold. Deletion takes priority over notification. A moderation threshold of `0.4` does not mean that every message with P(spam) above 0.4 triggers a notification: `spam` must first be the winning label. Scores are not guaranteed to be calibrated probabilities.
 
-## New in 1.0.2
+## New in 1.0.3
 
 After `/add_spam` and `/add_ham`, and in `/status`, the bot reports how many added examples are not included in the loaded model. Imports and duplicate additions count too. The count survives a restart and returns to zero after successful training on the current dataset. Older models show an unknown count until successfully retrained with this version. This reminder is not a measure of model quality; manual edits or deletions can require retraining even when the count is zero.
 

@@ -123,6 +123,15 @@ After `/add_spam` and `/add_ham`, and in `/status`, the bot reports how many add
 
 A newly trained model replaces the previous file only after saving completes. A failed write preserves the old file. This release also adds this English guide and simplifies the standalone bot.
 
+## New in 1.0.1
+
+- Classification, deletion attempts, Telegram outcomes, journal writes and administrator notifications are tracked separately. A journal or notification failure does not turn a successful deletion into a deletion error. A timeout is recorded as an unknown outcome; no automatic retry is performed.
+- The filter and `/test_spam` use the same decision function. Records include P(spam), the predicted label and confidence, the selected action and reason, thresholds, policy version, UUID, UTC timestamp, and SHA256 of the input and the **loaded** model. The model hash is calculated from the same bytes loaded into memory.
+- `moderation_decisions` distinguishes `source=filter/test_spam` and `dry_run=0/1`. In dry-run mode, an `action=delete` record does not mean a message was deleted; the action log also records `would_*` events.
+- `/status` shows the bot and model versions. Diagnostic commands report the recommendation, probability, reason, thresholds, version and journal outcome without deleting messages or sending moderation notifications.
+
+`DRY_RUN=true` remains the default. Decision rules and the 0.7/0.4 thresholds are unchanged. This release stabilizes execution; it does not claim to fix every false positive or introduce author profiling or new content rules.
+
 ## Train for your community
 
 Administrators can add examples with `/add_spam message` and `/add_ham message`. Run `/train` to train on the database's current `messages` table and reload the model. Training needs both classes and enough recurring features. It runs synchronously and may delay bot responses on large datasets.

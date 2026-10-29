@@ -117,7 +117,7 @@ Use `/status`, `/check_permissions`, and `/test_spam your message` to inspect se
 
 An action requires the predicted label to be `spam` and its confidence to be **strictly greater** than the corresponding threshold. Deletion takes priority over notification. A moderation threshold of `0.4` does not mean that every message with P(spam) above 0.4 triggers a notification: `spam` must first be the winning label. Scores are not guaranteed to be calibrated probabilities.
 
-## New in 1.0.3
+## New in 1.0.2
 
 After `/add_spam` and `/add_ham`, and in `/status`, the bot reports how many added examples are not included in the loaded model. Imports and duplicate additions count too. The count survives a restart and returns to zero after successful training on the current dataset. Older models show an unknown count until successfully retrained with this version. This reminder is not a measure of model quality; manual edits or deletions can require retraining even when the count is zero.
 

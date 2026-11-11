@@ -1,5 +1,7 @@
 # Антиспам 1.0.4
 
+Спам-волна — серия сообщений, которая почти одновременно появляется в нескольких группах. Например, в разных чатах рассылают ложное объявление о закрытии и переезде. Когда бот видит один и тот же известный маркер в двух группах за 15 секунд, он собирает совпадения в одну карточку.
+
 1. **Карточка спам-волны.** До 20 сообщений с известным маркером из разных групп и ссылки на оригиналы. Новые совпадения дополняют карточку.
 2. **Удаление волны.** Одним подтверждением можно удалить сообщения из показанного списка.
 3. **Ручная проверка после удаления.** Итог показывает причины отказов и ссылки, если группа поддерживает прямые ссылки.
@@ -11,9 +13,11 @@
 
 Пробный режим включён по умолчанию. Дополнительные сигналы и волны включаются настройкой `EXPERIMENTAL_REVIEW_ALERTS=true` в активном режиме. Тестирование проводилось.
 
-[Как добавить модератора](https://github.com/antonnvmail-sketch/telegram-antispam/blob/v1.0.4/README.md#как-добавить-модератора) · [Команды модерации и отчётов](https://github.com/antonnvmail-sketch/telegram-antispam/blob/v1.0.4/README.md#команды-модерации-и-отчётов)
+[Как добавить модератора](https://github.com/antonnvmail-sketch/telegram-antispam/blob/main/README.md#как-добавить-модератора) · [Команды модерации и отчётов](https://github.com/antonnvmail-sketch/telegram-antispam/blob/main/README.md#команды-модерации-и-отчётов)
 
 ## Antispam 1.0.4
+
+A spam wave is a series of messages that appear almost simultaneously in several groups. For example, several chats may receive a false notice about closing and moving. When the bot sees the same known marker in two groups within 15 seconds, it collects the matches in one card.
 
 1. **Wave card.** One card links to up to 20 messages with a known marker across chats. Later matches update the same card.
 2. **Wave deletion.** Confirm the displayed list to request deletion of its messages.
@@ -26,7 +30,7 @@
 
 Dry-run mode is enabled by default. To enable supplemental alerts and wave actions in active mode, set `EXPERIMENTAL_REVIEW_ALERTS=true`. Testing was conducted.
 
-[Add a moderator](https://github.com/antonnvmail-sketch/telegram-antispam/blob/v1.0.4/README.en.md#add-a-moderator) · [Commands](https://github.com/antonnvmail-sketch/telegram-antispam/blob/v1.0.4/README.en.md#commands)
+[Add a moderator](https://github.com/antonnvmail-sketch/telegram-antispam/blob/main/README.en.md#add-a-moderator) · [Commands](https://github.com/antonnvmail-sketch/telegram-antispam/blob/main/README.en.md#commands)
 
 ## Антиспам 1.0.3
 

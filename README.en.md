@@ -120,7 +120,11 @@ An action requires the predicted label to be `spam` and its confidence to be **s
 
 3. Restart the bot. Each moderator opens a private chat with it and taps **Start**.
 
-Moderators receive cards and can use `/review` and `/spam` in their assigned groups. When a wave reaches at least one assigned group, they see their own links and the total number of matches. They can separately confirm deletion of the entire wave, including the fixed matches in other configured groups. Administrators receive a report with the moderator’s name and per-group results.
+Moderators receive cards and can use `/review` and `/spam` in their assigned groups.
+
+**What a spam wave looks like.** Imagine several groups receiving near-simultaneous messages that falsely announce that a chat is closing and moving. In 1.0.4, the bot groups messages into a wave when it sees the same known campaign marker in at least two configured groups within 15 seconds. It sends one card and updates it as more matches arrive.
+
+For example, suppose the bot finds ten matches and two are in a moderator’s assigned groups. The moderator sees links to those two messages and the total count. After verifying the spam, they can confirm deletion of all ten messages in the displayed list. Administrators receive a report with the moderator’s name and the results for each group.
 
 ## New in 1.0.4
 

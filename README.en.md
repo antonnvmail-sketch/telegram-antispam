@@ -128,21 +128,18 @@ For example, suppose the bot finds ten matches and two are in a moderator’s as
 
 ## New in 1.0.4
 
-After partial wave deletion, the result lists messages that need manual follow-up, including the reason and a source link where the chat supports direct message links.
+**What a spam wave looks like.** For example, several groups receive near-simultaneous false notices about closing a chat and moving elsewhere. If the bot sees the same known campaign marker in two configured groups within 15 seconds, it groups the matches into one wave.
 
-Moderators can be assigned to specific groups. Full-wave deletion requires separate confirmation and produces a report for administrators. See [Add a moderator](#add-a-moderator).
+- **One card per wave.** The card contains links to up to 20 source messages. Later matches update the same card. Opening a link requires access to its group.
+- **Wave deletion with one confirmation.** The bot displays the list and then requests deletion of the listed messages. Later matches and messages with known edits are excluded from that operation.
+- **Links for manual follow-up.** If Telegram rejects deletion or the outcome is unknown, the bot shows the reason and a source link where supported.
+- **Moderators by Telegram ID.** Routine moderation is limited to assigned groups. If a wave reaches one of those groups, the moderator sees their own links and the total number of matches. They can confirm deletion of the entire wave. Administrators receive per-group results. See [Add a moderator](#add-a-moderator).
+- **Review cards for USDT trades and job offers.** Direct USDT trade requests and remote work offers that ask readers to move to private messages can trigger a card with the reason and action buttons.
+- **Hidden Telegram links after edits.** The bot can flag selected group migration notices even when the hidden link is added later. These alerts are informational.
+- **`/spam` in groups.** Reply to missed spam to save the text or caption and label, then immediately request deletion.
+- **Analytics by person and signal.** `/review_stats` shows totals by person and signal, and `/moderation_log` shows recent decisions. Labels and confirmed deletions are counted separately. See [Commands](#commands).
 
-The wave alert offers bulk deletion with a separate confirmation listing up to 20 source messages. Messages arriving after the preview and messages whose edits the bot has received are excluded. The bot stores the spam label and administrator ID before each request. Statistics report labels and confirmed deletions separately.
-
-An administrator or assigned moderator can flag missed spam with `/spam`. The bot records the decision before requesting deletion. Reports count labels and confirmed deletions separately. See [Commands](#commands).
-
-For a detected wave, each administrator gets one alert with group names and links to the source messages. Later matches update the same alert. A known marker must first appear in two chats within 15 seconds. The wave closes after 60 seconds without a new match. The alert lists the first 20 messages. Opening a link requires access to the source chat.
-
-With `EXPERIMENTAL_REVIEW_ALERTS=true` and `DRY_RUN=false`, the bot sends supplemental alerts to designated administrators for selected group migration notices, known wave markers across multiple chats, direct USDT trades, and remote work offers that ask readers to move to private messages. Hidden links in text and captions are checked on edits too.
-
-Supplemental alerts are for manual review. An individual alert is skipped when the main filter has already selected moderation or deletion. Wave alerts are handled separately. Deduplication is held in process memory. A genuine migration, permitted trade, or legitimate job offer can trigger an alert. Performance on new traffic has yet to be measured.
-
-For new messages about trades and jobs, the bot uses the existing review cards and shows the reason. `/review_stats` lists the number of source messages shown and the spam and ham responses for each reason. Matches on edits and individual migration notices are informational. Wave cards include a separate button to confirm deletion.
+Supplemental signals and wave actions require `EXPERIMENTAL_REVIEW_ALERTS=true` and `DRY_RUN=false`. The main filter takes priority for individual messages. Deduplication is held in process memory. A genuine migration, permitted trade, or legitimate job offer can trigger an alert. Performance on new traffic has yet to be measured.
 
 ## New in 1.0.3
 

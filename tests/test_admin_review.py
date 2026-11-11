@@ -61,7 +61,7 @@ class ReviewTests(unittest.IsolatedAsyncioTestCase):
         q=await self.card();q.message.edit_text.side_effect=TimeoutError()
         await self.service.callback(q);self.assertEqual(self.state(),'deleted')
     async def test_router_registers_callback_and_manual_review(self):
-        router=make_router(self.service);self.assertEqual(len(router.message.handlers),4);self.assertEqual(len(router.callback_query.handlers),1)
+        router=make_router(self.service);self.assertEqual(len(router.message.handlers),6);self.assertEqual(len(router.callback_query.handlers),1)
         original=N(message_id=55,text='Реплика',caption=None)
         m=N(from_user=N(id=10),chat=N(id=-100123),reply_to_message=original,reply=AsyncMock())
         await router.message.handlers[0].callback(m);self.bot.send_message.assert_awaited_once()

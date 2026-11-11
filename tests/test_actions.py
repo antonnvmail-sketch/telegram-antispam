@@ -232,7 +232,7 @@ class HandlerTests(unittest.IsolatedAsyncioTestCase):
             record_decision=lambda *args: True, DRY_RUN=False,
             log_action=write, SPAM_DELETE_THRESHOLD=.7, SPAM_MODERATE_THRESHOLD=.4,
             ADMIN_IDS=[1, 2], bot=SimpleNamespace(send_message=send),
-            review_service=SimpleNamespace(send=review_send,tickets=SimpleNamespace(record_auto_delete=lambda *args:None)),
+            review_service=SimpleNamespace(reviewers_for=lambda chat:(1, 2),send=review_send,tickets=SimpleNamespace(record_auto_delete=lambda *args:None)),
             check_bot_permissions=permissions,
             TelegramBadRequest=BadRequest, TelegramForbiddenError=Forbidden,
             TelegramNotFound=NotFound, execute_actions=execute_actions)

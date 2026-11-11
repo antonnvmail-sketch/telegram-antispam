@@ -184,6 +184,7 @@ class IntegrationTests(unittest.IsolatedAsyncioTestCase):
                     DRY_RUN=False,SPAM_DELETE_THRESHOLD=.7,SPAM_MODERATE_THRESHOLD=.4,is_admin=lambda uid:True,
                     execute_actions=execute_actions,log_action=lambda *args:None,
                     ADMIN_IDS=[1],bot=SimpleNamespace(send_message=send),
+                    review_service=SimpleNamespace(reviewers_for=lambda chat:(1,)),
                     check_bot_permissions=permissions,TelegramBadRequest=BadRequest,TelegramForbiddenError=Forbidden,
                     TelegramNotFound=NotFound)
                 exec(extract_functions('filter_message','cmd_test_spam','record_decision'),ns)

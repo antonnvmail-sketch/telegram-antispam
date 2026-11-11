@@ -13,12 +13,14 @@ from decisions import load_versioned_model, classify_and_decide, persist_decisio
 import os
 import io
 from import_dataset import import_txt_to_db
-from config import DRY_RUN, validate_runtime
+from config import DRY_RUN, EXPERIMENTAL_REVIEW_ALERTS, MODERATOR_CHAT_IDS, validate_runtime
+from migration_telegram import attach_migration_review
+from offer_candidate import review_reason
 
 validate_runtime()
 
 # Логирование в файл и stdout
-APP_VERSION = "1.0.3"
+APP_VERSION = "1.0.4"
 
 if __name__ == "__main__":
     from runtime_ops import acquire_instance
@@ -40,10 +42,18 @@ bot = Bot(token=TELEGRAM_TOKEN)
 dp = Dispatcher()
 
 from admin_review import AdminReview, Tickets, make_router
-review_service = AdminReview(bot, Tickets(str(DATASET_PATH) + '.admin-review.sqlite'), ADMIN_IDS, CHAT_IDS, dry_run=DRY_RUN)
+review_service = AdminReview(
+    bot, Tickets(str(DATASET_PATH) + '.admin-review.sqlite'), ADMIN_IDS, CHAT_IDS,
+    dry_run=DRY_RUN, moderator_chats=MODERATOR_CHAT_IDS,
+)
+if EXPERIMENTAL_REVIEW_ALERTS:
+    attach_migration_review(
+        dp, CHAT_IDS, review_service.reviewers, dry_run=DRY_RUN, offer_reason=review_reason,
+        review_service=review_service,
+    )
 review_router = make_router(review_service)
 dp.callback_query.register(review_service.callback, F.data.startswith('rv:'))
-for command, handler in zip(('review','review_stats','stat','stat_export'), review_router.message.handlers):
+for command, handler in zip(('review','review_stats','stat','stat_export','spam','moderation_log'), review_router.message.handlers):
     dp.message.register(handler.callback, Command(command))
 if __name__ == '__main__':
     from runtime_ops import install_runtime
@@ -153,9 +163,11 @@ async def cmd_help(message: types.Message):
 /test_spam <текст> — проверить текст на спам (только для админов)
 /here — показать текущий chat.id (для настройки CHAT_IDS)
 /review — ответьте на сообщение в подключённой группе: карточка придёт вам в личку
+/spam — ответьте на спам в подключённой группе: сохранить отметку и удалить исходное сообщение
 /stat — текущий и два предыдущих календарных месяца, МСК (администратору в личном чате)
 /stat_export — месячные счётчики в CSV без текстов и ID
 /review_stats — количество ответов администраторов
+/moderation_log [ID] — последние решения и удаления, только для администратора
 Кнопки действуют 24 часа. Обратная связь не запускает обучение автоматически.
 При DRY_RUN=true карточки действий отключены.
 
@@ -380,10 +392,10 @@ async def filter_message(message: types.Message):
             return await review_service.send(admin_id,message.chat.id,message.message_id,message.text,decision.to_record(),kind='deleted',chat_title=getattr(message.chat,'title',None))
         return await bot.send_message(admin_id,text)
 
-    await execute_actions(
+    return await execute_actions(
         message=message, decision_record=decision,
         journal_decision=lambda record: record_decision(message, record, "filter"),
-        admins=ADMIN_IDS, send_message=review_notification,
+        admins=review_service.reviewers_for(message.chat.id), send_message=review_notification,
         record_deletion=lambda: review_service.tickets.record_auto_delete(message.chat.id,message.message_id),
         write_action=lambda action: log_action(
             DATASET_PATH, user_id_safe, from_user_username,

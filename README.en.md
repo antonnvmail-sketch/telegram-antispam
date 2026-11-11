@@ -4,7 +4,7 @@
 
 A self-hosted Telegram bot that helps group administrators moderate text messages. It uses TF-IDF and logistic regression to classify messages as spam or legitimate conversation (`ham`). In active mode, it deletes messages classified as spam above the deletion threshold and sends suspicious messages to administrators.
 
-**Version: 1.0.3 · License: MIT.**
+**Version: 1.0.4 · License: MIT.** [Download 1.0.4](https://github.com/antonnvmail-sketch/telegram-antispam/releases/tag/v1.0.4)
 
 [Download a release](https://github.com/antonnvmail-sketch/telegram-antispam/releases) · [Project website (Russian)](https://justmade.su/antispam/) · [Changelog (Russian)](CHANGELOG.md) · [Report an issue](https://github.com/antonnvmail-sketch/telegram-antispam/issues)
 
@@ -98,6 +98,8 @@ Use `/status`, `/check_permissions`, and `/test_spam your message` to inspect se
 | `TELEGRAM_TOKEN` | Your secret bot token; store it only in your local `.env` |
 | `ADMIN_IDS` | Users allowed to run training and diagnostic commands |
 | `CHAT_IDS` | Chats monitored by the text filter |
+| `MODERATOR_CHAT_IDS` | Group assignments by moderator ID. Defaults to `{}` |
+| `EXPERIMENTAL_REVIEW_ALERTS` | Supplemental review cards and wave alerts. Defaults to `false` |
 | `DATASET_PATH` / `MODEL_PATH` | Local SQLite database and trusted model file |
 | `DRY_RUN` | Defaults to `true`; records proposed moderation actions |
 | `SPAM_DELETE_THRESHOLD` | Deletion threshold; defaults to `0.7` |
@@ -105,6 +107,38 @@ Use `/status`, `/check_permissions`, and `/test_spam your message` to inspect se
 | `LOG_FILE`, `LOG_MAX_BYTES`, `LOG_BACKUP_COUNT` | Local log rotation settings |
 
 An action requires the predicted label to be `spam` and its confidence to be **strictly greater** than the corresponding threshold. Deletion takes priority over notification. A moderation threshold of `0.4` does not mean that every message with P(spam) above 0.4 triggers a notification: `spam` must first be the winning label. Scores are not guaranteed to be calibrated probabilities.
+
+### Add a moderator
+
+1. Ask the moderator for their numeric Telegram user ID. Use `/here` in a group to see its chat ID.
+2. Make sure each group is already listed in `CHAT_IDS`. Assign groups in the local `.env` file. In this example, the first moderator covers both groups and the second covers only the second group. Replace all IDs with your own.
+
+   ```dotenv
+   CHAT_IDS=-1001234567890,-1009876543210
+   MODERATOR_CHAT_IDS={"123456789":[-1001234567890,-1009876543210],"987654321":[-1009876543210]}
+   ```
+
+3. Restart the bot. Each moderator opens a private chat with it and taps **Start**.
+
+Moderators receive cards and can use `/review` and `/spam` in their assigned groups. When a wave reaches at least one assigned group, they see their own links and the total number of matches. They can separately confirm deletion of the entire wave, including the fixed matches in other configured groups. Administrators receive a report with the moderator’s name and per-group results.
+
+## New in 1.0.4
+
+After partial wave deletion, the result lists messages that need manual follow-up, including the reason and a source link where the chat supports direct message links.
+
+Moderators can be assigned to specific groups. Full-wave deletion requires separate confirmation and produces a report for administrators. See [Add a moderator](#add-a-moderator).
+
+The wave alert offers bulk deletion with a separate confirmation listing up to 20 source messages. Messages arriving after the preview and messages whose edits the bot has received are excluded. The bot stores the spam label and administrator ID before each request. Statistics report labels and confirmed deletions separately.
+
+An administrator or assigned moderator can flag missed spam with `/spam`. The bot records the decision before requesting deletion. Reports count labels and confirmed deletions separately. See [Commands](#commands).
+
+For a detected wave, each administrator gets one alert with group names and links to the source messages. Later matches update the same alert. A known marker must first appear in two chats within 15 seconds. The wave closes after 60 seconds without a new match. The alert lists the first 20 messages. Opening a link requires access to the source chat.
+
+With `EXPERIMENTAL_REVIEW_ALERTS=true` and `DRY_RUN=false`, the bot sends supplemental alerts to designated administrators for selected group migration notices, known wave markers across multiple chats, direct USDT trades, and remote work offers that ask readers to move to private messages. Hidden links in text and captions are checked on edits too.
+
+Supplemental alerts are for manual review. An individual alert is skipped when the main filter has already selected moderation or deletion. Wave alerts are handled separately. Deduplication is held in process memory. A genuine migration, permitted trade, or legitimate job offer can trigger an alert. Performance on new traffic has yet to be measured.
+
+For new messages about trades and jobs, the bot uses the existing review cards and shows the reason. `/review_stats` lists the number of source messages shown and the spam and ham responses for each reason. Matches on edits and individual migration notices are informational. Wave cards include a separate button to confirm deletion.
 
 ## New in 1.0.3
 
@@ -157,6 +191,11 @@ Use messages you have permission to process. Human moderators should assign labe
 | --- | --- |
 | `/start`, `/help` | Show help |
 | `/here` | Show the current chat ID |
+| `/review` | Reply to a group message to get a private review card. Available to administrators and moderators assigned to the group. |
+| `/spam` | Reply to a group message to save a spam label and request deletion. Available to administrators and moderators assigned to the group. The label remains if Telegram rejects deletion. |
+| `/review_stats` | Show decisions by person and signal, labels, and confirmed deletions. Administrator only, in private chat. |
+| `/moderation_log [Telegram ID]` | Show the latest 10 decisions, optionally for one person. Administrator only, in private chat. |
+| `/stat`, `/stat_export` | Show monthly counts or export them as CSV. Administrator only, in private chat. |
 | `/status`, `/check_permissions` | Inspect configuration, versions, and permissions |
 | `/test_spam message` | Show a prediction and recommended action without deleting or notifying |
 | `/add_spam message`, `/add_ham message` | Add a labeled training example |
@@ -166,6 +205,8 @@ Use messages you have permission to process. Human moderators should assign labe
 | `/evaluate` | Evaluate against the training database; not an independent quality measurement |
 
 Training, statistics, and diagnostic commands require a configured administrator ID.
+
+Moderation actions from commands and buttons are disabled with `DRY_RUN=true`. Cards for supplemental signals and wave deletion also require `EXPERIMENTAL_REVIEW_ALERTS=true`. The bot needs permission to delete messages in each source group.
 
 ## Evaluate on separate messages
 

@@ -20,7 +20,11 @@ def monthly_report(deletions,feedback,started_at,now=None):
         f=[r for r in feedback if lower<=r['at']<upper]
         counts=dict(auto_deleted=sum(r['origin']=='auto' for r in d),manual_deleted=sum(r['origin']=='manual' for r in d),
                     false_positive_reports=sum(r['reason']=='false_positive_after_deletion' for r in f),
-                    reviewed_ham=sum(r['label']=='HAM' and r['reason']=='explicit_review' for r in f))
+                    reviewed_ham=sum(r['label']=='HAM' and r['reason']=='explicit_review' for r in f),
+                    spam_command_reports=sum(r['reason']=='spam_command' for r in f),
+                    spam_command_deleted=sum(r['origin']=='spam_command' for r in d),
+                    wave_reports=sum(r['reason']=='wave_delete' for r in f),
+                    wave_deleted=sum(r['origin']=='wave_delete' for r in d))
         rows.append(dict(month=f'{start:%Y-%m}',title=f'{MONTHS[start.month-1]} {start.year}',
                          current=delta==0,collection_started_midmonth=available and started_at>start.timestamp(),
                          data_available=available,**{k:v if available else None for k,v in counts.items()}))
@@ -35,11 +39,13 @@ def format_report(report):
         if not row['data_available']:lines.append('Сбор статистики ещё не был включён. Данных нет.');continue
         if row['collection_started_midmonth']:lines.append('Неполное покрытие: сбор начат '+datetime.fromisoformat(report['collection_started_at']).strftime('%d.%m.%Y %H:%M')+' МСК.')
         lines += [f"Бот удалил автоматически: {row['auto_deleted']}",f"Удалено по кнопке «Спам»: {row['manual_deleted']}",
+                  f"Отметок командой /spam: {row['spam_command_reports']}",f"Удалено командой /spam: {row['spam_command_deleted']}",
+                  f"Отметок при удалении волны: {row['wave_reports']}",f"Удалено из волн: {row['wave_deleted']}",
                   f"Отмечено ошибок удаления: {row['false_positive_reports']}",f"Подозрение отклонено («Не спам»): {row['reviewed_ham']}"]
     return '\n'.join(lines)+'\n\n'+report['note']+' Это счётчики действий и ответов, а не общая точность модели.'
 
 def csv_report(report):
     output=io.StringIO(newline='');writer=csv.writer(output,delimiter=';')
-    writer.writerow(['Месяц','Удалено автоматически','Удалено по кнопке Спам','Отметок ошибки удаления','Подозрений отклонено','Данные доступны','Месяц не завершён','Сбор начат в середине месяца','Начало сбора МСК','Состояние на МСК'])
-    for r in report['months']:writer.writerow([r['month'],*[r[k] for k in FIELDS],r['data_available'],r['current'],r['collection_started_midmonth'],report['collection_started_at'],report['as_of']])
+    writer.writerow(['Месяц','Удалено автоматически','Удалено по кнопке Спам','Отметок ошибки удаления','Подозрений отклонено','Данные доступны','Месяц не завершён','Сбор начат в середине месяца','Начало сбора МСК','Состояние на МСК','Отметок командой /spam','Удалено командой /spam','Отметок при удалении волны','Удалено из волн'])
+    for r in report['months']:writer.writerow([r['month'],*[r[k] for k in FIELDS],r['data_available'],r['current'],r['collection_started_midmonth'],report['collection_started_at'],report['as_of'],r['spam_command_reports'],r['spam_command_deleted'],r['wave_reports'],r['wave_deleted']])
     return output.getvalue().encode('utf-8-sig')

@@ -28,6 +28,7 @@ class Observation:
     message_id: int
     text: str
     chat_title: str = ""
+    restriction_subject: int | None = None
 
     @property
     def key(self):

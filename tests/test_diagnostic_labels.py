@@ -15,6 +15,7 @@ def load_diagnostic(source):
     module = ast.Module(body=[handler], type_ignores=[])
     namespace = {'types': SimpleNamespace(Message=object), 'is_admin': lambda uid: uid == 7,
                  'model': object(), 'record_decision': lambda *args: True, 'diagnostic_text': diagnostic_text, 'SPAM_DELETE_THRESHOLD': 0.7, 'SPAM_MODERATE_THRESHOLD': 0.4}
+    namespace['AUTO_DELETE_DIRECT_USDT'] = False
     exec(compile(ast.fix_missing_locations(module), '<diagnostic-handler>', 'exec'), namespace)
     return namespace
 

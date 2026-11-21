@@ -1,4 +1,7 @@
 import asyncio
+from dataclasses import replace
+from datetime import datetime, timezone
+from uuid import uuid4
 import logging
 from logging.handlers import RotatingFileHandler
 from aiogram import Bot, Dispatcher, types, F
@@ -7,20 +10,24 @@ from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError, Teleg
 from config import TELEGRAM_TOKEN, ADMIN_IDS, CHAT_IDS, DATASET_PATH, MODEL_PATH, SPAM_DELETE_THRESHOLD, SPAM_MODERATE_THRESHOLD, LOG_FILE, LOG_MAX_BYTES, LOG_BACKUP_COUNT
 from database import init_db, add_message, get_all_messages, log_action, log_decision
 from ml import train_model, evaluate_model, pending_training_count
-from moderation import is_admin
+from moderation import can_moderate_sender, is_admin
 from moderation_actions import execute_actions
 from decisions import load_versioned_model, classify_and_decide, persist_decision, diagnostic_text
 import os
 import io
 from import_dataset import import_txt_to_db
-from config import DRY_RUN, EXPERIMENTAL_REVIEW_ALERTS, MODERATOR_CHAT_IDS, validate_runtime
+from config import AUTO_DELETE_DIRECT_USDT, DRY_RUN, EXPERIMENTAL_REVIEW_ALERTS, MODERATOR_CHAT_IDS, validate_runtime
 from migration_telegram import attach_migration_review
-from offer_candidate import review_reason
+from offer_candidate import direct_trade_decision, is_direct_trade, review_reason
+from spam_waves import SpamWaves
+from wave_reports import WaveReports
 
 validate_runtime()
 
 # Логирование в файл и stdout
-APP_VERSION = "1.0.4"
+APP_VERSION = "1.0.5"
+WAVE_AUTO_DELETE = not DRY_RUN
+spam_waves = SpamWaves()
 
 if __name__ == "__main__":
     from runtime_ops import acquire_instance
@@ -41,11 +48,15 @@ aiogram_logger.setLevel(logging.WARNING)
 bot = Bot(token=TELEGRAM_TOKEN)
 dp = Dispatcher()
 
-from admin_review import AdminReview, Tickets, make_router
+from admin_review import AdminReview, Tickets, make_router, restriction_subject
 review_service = AdminReview(
     bot, Tickets(str(DATASET_PATH) + '.admin-review.sqlite'), ADMIN_IDS, CHAT_IDS,
-    dry_run=DRY_RUN, moderator_chats=MODERATOR_CHAT_IDS,
+    dry_run=DRY_RUN, moderator_chats=MODERATOR_CHAT_IDS, repeat_restrictions=WAVE_AUTO_DELETE,
 )
+wave_reports = WaveReports(bot, review_service.tickets, ADMIN_IDS)
+review_service.wave_reports = wave_reports
+if WAVE_AUTO_DELETE:
+    dp.startup.register(wave_reports.recover)
 if EXPERIMENTAL_REVIEW_ALERTS:
     attach_migration_review(
         dp, CHAT_IDS, review_service.reviewers, dry_run=DRY_RUN, offer_reason=review_reason,
@@ -59,6 +70,37 @@ if __name__ == '__main__':
     from runtime_ops import install_runtime
     _runtime_ops = install_runtime(bot, dp, _ops_directory)
 
+
+@dp.message(Command("wave_ham", "wave_release"))
+async def correct_wave_moderation(message, command):
+    actor = message.from_user
+    if message.chat.type != "private" or actor is None or not is_admin(actor.id):
+        return
+    if not WAVE_AUTO_DELETE:
+        await message.reply("Исправления действий выключены в пробном режиме.")
+        return
+    args = (command.args or "").split()
+    wave_command = command.command == "wave_ham"
+    usage = ("/wave_ham ID_волны ID_группы ID_сообщения" if wave_command
+             else "/wave_release ID_группы ID_участника")
+    if len(args) != (3 if wave_command else 2):
+        await message.reply(usage)
+        return
+    try:
+        chat_id, target_id = map(int, args[-2:])
+    except ValueError:
+        await message.reply(usage)
+        return
+    if chat_id not in CHAT_IDS or not 0 < target_id < 2**63:
+        await message.reply("Укажите подключённую группу и действительный ID.")
+        return
+    if wave_command:
+        corrected = await wave_reports.correct_message(args[0], chat_id, target_id, actor.id)
+        status = ("Исправление сохранено. История исходного удаления доступна в отчёте."
+                  if corrected else "Сообщение не найдено в указанной волне.")
+    else:
+        status = await review_service.release_repeat_restriction(chat_id, target_id, actor.id)
+    await message.reply(status)
 
 # Глобальные перехватчики исключений
 import sys
@@ -266,6 +308,8 @@ async def cmd_test_spam(message: types.Message):
         logger.error("Diagnostic classification failed: %s", type(exc).__name__)
         await message.reply("❌ Не удалось получить решение модели. Действия не выполнялись.")
         return
+    if AUTO_DELETE_DIRECT_USDT and is_direct_trade(text):
+        decision = direct_trade_decision(decision)
     saved = record_decision(message, decision, "test_spam")
     await message.reply(diagnostic_text(decision, saved=saved))
 
@@ -351,64 +395,149 @@ async def handle_document_upload(message: types.Message):
     pass
 
 @dp.message(F.chat.id.in_(CHAT_IDS))
-async def filter_message(message: types.Message):
-    # Детальное логирование начала обработки
-    logger.info(f"Processing message from chat {message.chat.id}, user {message.from_user.id if message.from_user else 'None'}")
+async def filter_message(message: types.Message, *, edited=False):
+    text = message.text or getattr(message, "caption", None)
+    if not text or not text.strip() or text.lstrip().startswith("/"):
+        return
 
+    entities = message.entities if message.text else message.caption_entities
+    quoted_or_forwarded = (message.forward_origin or message.is_automatic_forward
+                           or message.quote or message.external_reply)
+    blockquote = any(entity.type in {"blockquote", "expandable_blockquote"}
+                     for entity in entities or ())
+    direct_trade = (
+        AUTO_DELETE_DIRECT_USDT
+        and not (quoted_or_forwarded or blockquote)
+        and not any(entity.type == "text_link" for entity in entities or ())
+        and is_direct_trade(text)
+    )
+    wave_eligible = (not edited and message.chat.type in {"group", "supergroup"}
+                     and not (quoted_or_forwarded or blockquote))
+    standalone = direct_trade or (not edited and bool(message.text))
+    if not (standalone or wave_eligible):
+        return
     if not model:
         logger.warning("Model not loaded, skipping message filtering")
         return
-
-    if not message.text or not message.text.strip():
-        logger.debug("Message has no text, skipping")
+    if not DRY_RUN and not await can_moderate_sender(bot, message, logger):
         return
 
-    from_user_id = message.from_user.id if message.from_user else None
-    from_user_username = message.from_user.username if message.from_user and message.from_user.username else ""
-
-    # Проверяем, что это не команда бота
-    if message.text.startswith('/'):
-        logger.debug("Message is a command, skipping spam check")
-        return
-
-    # Классификация сообщения
     try:
+        # For a direct match the model supplies audit scores, not the action.
         decision = classify_and_decide(
-            model, message.text, delete_threshold=SPAM_DELETE_THRESHOLD,
+            model, text, delete_threshold=SPAM_DELETE_THRESHOLD,
             moderate_threshold=SPAM_MODERATE_THRESHOLD, dry_run=DRY_RUN,
         )
-        label, confidence = decision.label, decision.confidence
-        logger.info(f"Message classified as '{label}' with confidence {confidence:.3f} from user {from_user_id}")
-    except Exception as e:
-        logger.error(f"Error during message classification: {e}")
+        if direct_trade:
+            decision = direct_trade_decision(decision)
+    except Exception:
+        logger.exception("Error during message classification")
         return
 
+    if wave_eligible and decision.action in {"moderate", "delete"}:
+        matched, earlier = spam_waves.observe(message, decision, text)
+        candidate = spam_waves.recent.get((message.chat.id, message.message_id))
+        if matched:
+            action_logger.info("Spam wave match in chat %s message %s", message.chat.id, message.message_id)
+        if matched and WAVE_AUTO_DELETE:
+            try:
+                wave_reports.observe(candidate, earlier)
+            except Exception:
+                logger.exception("Failed to open or update wave report")
+                tracked = False
+            else:
+                tracked = bool(wave_reports.admins)
+            current = apply_wave_decision(message, decision, standalone=standalone, aggregate=tracked)
+            try:
+                result, *_ = await asyncio.gather(
+                    current, *(apply_earlier_wave_decision(item, aggregate=tracked) for item in earlier),
+                )
+                return result
+            finally:
+                if tracked:
+                    try:
+                        await wave_reports.publish(candidate.wave_id)
+                    except Exception:
+                        logger.exception("Failed to publish wave report")
+    if standalone:
+        return await apply_filter_decision(message, decision, edited=edited)
+
+
+async def apply_earlier_wave_decision(candidate, *, aggregate):
+    message = candidate.message
+    if candidate.decision.action == "delete" and (
+        message.text or candidate.decision.reason == "direct_usdt_trade_rule"
+    ):
+        # The ordinary filter has already taken responsibility for this deletion.
+        return
+    if (await can_moderate_sender(bot, message, logger)
+            and spam_waves.recent.get(candidate.key) is candidate):
+        await apply_wave_decision(message, candidate.decision, standalone=False, aggregate=aggregate)
+    else:
+        candidate.deletion = "skipped"
+        if aggregate:
+            try:
+                wave_reports.record_deletion(candidate)
+            except Exception:
+                logger.exception("Failed to record skipped wave deletion")
+
+
+async def apply_wave_decision(message, decision, *, standalone, aggregate):
+    candidate = spam_waves.recent.get((message.chat.id, message.message_id))
+    if candidate is None or candidate.message is not message:
+        return
+    if not standalone or decision.action != "delete":
+        decision = replace(decision, action="delete", reason="confirmed_spam_wave",
+                           decision_id=str(uuid4()), created_at=datetime.now(timezone.utc).isoformat())
+    return await apply_filter_decision(message, decision, aggregate=aggregate)
+
+
+async def apply_filter_decision(message, decision, *, edited=False, aggregate=False):
+    text = message.text or message.caption
+    from_user_id = message.from_user.id if message.from_user else None
+    from_user_username = message.from_user.username if message.from_user and message.from_user.username else ""
     user_id_safe = from_user_id if from_user_id is not None else 0
 
     async def review_notification(admin_id, text):
-        if decision.action == 'moderate':
-            return await review_service.send(admin_id,message.chat.id,message.message_id,message.text,decision.to_record(),chat_title=getattr(message.chat,'title',None))
-        if decision.action == 'delete' and text.startswith('🗑️ УДАЛЕН СПАМ'):
-            return await review_service.send(admin_id,message.chat.id,message.message_id,message.text,decision.to_record(),kind='deleted',chat_title=getattr(message.chat,'title',None))
-        return await bot.send_message(admin_id,text)
+        if decision.action == "moderate":
+            return await review_service.send(admin_id, message.chat.id, message.message_id, message.text or message.caption, decision.to_record(),
+                                             chat_title=message.chat.title, subject=restriction_subject(message))
+        if decision.action == "delete" and text.startswith("🗑️ УДАЛЕН СПАМ"):
+            return await review_service.send(admin_id, message.chat.id, message.message_id, text, decision.to_record(), kind="deleted", chat_title=message.chat.title)
+        return await bot.send_message(admin_id, text)
 
-    return await execute_actions(
+    # Telegram actions, journal writes and notifications have separate outcomes.
+    result = await execute_actions(
         message=message, decision_record=decision,
         journal_decision=lambda record: record_decision(message, record, "filter"),
-        admins=review_service.reviewers_for(message.chat.id), send_message=review_notification,
-        record_deletion=lambda: review_service.tickets.record_auto_delete(message.chat.id,message.message_id),
+        admins=() if aggregate else review_service.reviewers_for(message.chat.id), send_message=review_notification,
         write_action=lambda action: log_action(
             DATASET_PATH, user_id_safe, from_user_username,
-            message.chat.id, message.message_id, action, message.text,
+            message.chat.id, message.message_id, action, text,
         ),
+        record_deletion=lambda: review_service.tickets.record_auto_delete(message.chat.id, message.message_id),
         check_permissions=check_bot_permissions, logger=action_logger,
         rejected_errors=(TelegramBadRequest, TelegramForbiddenError, TelegramNotFound),
         bad_request_error=TelegramBadRequest,
     )
+    if not edited:
+        candidate = spam_waves.recent.get((message.chat.id, message.message_id))
+        if candidate and candidate.message is message:
+            candidate.deletion = result.deletion
+            if candidate.wave_id:
+                try:
+                    wave_reports.record_deletion(candidate)
+                except Exception:
+                    logger.exception("Failed to record wave deletion outcome")
+
+    return result
+
 
 @dp.edited_message(F.chat.id.in_(CHAT_IDS))
-async def invalidate_edited_review(message: types.Message):
-    review_service.tickets.invalidate(message.chat.id,message.message_id)
+async def shadow_edited_message(message: types.Message):
+    spam_waves.invalidate(message)
+    review_service.tickets.invalidate(message.chat.id, message.message_id)
+    await filter_message(message, edited=True)
 
 if __name__ == "__main__":
     async def main():

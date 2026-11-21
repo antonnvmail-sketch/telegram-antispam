@@ -12,7 +12,7 @@ from aiogram import BaseMiddleware, F
 from aiogram.enums import MessageEntityType
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
-from admin_review import source_link
+from admin_review import restriction_subject, source_link
 from migration_candidate import MARKER, MAX_WAVE_LINKS, MigrationWave, Observation, migration_notice
 from moderation_actions import ActionResult
 
@@ -55,6 +55,7 @@ class MigrationMiddleware(BaseMiddleware):
         async with self.wave_lock:
             wave = self.wave.observe(Observation(
                 self.clock(), message.chat.id, message.message_id, text, message.chat.title or "",
+                restriction_subject(message),
             ))
             self.wave_deliveries = {
                 code: delivery for code, delivery in self.wave_deliveries.items()
@@ -200,7 +201,7 @@ class MigrationMiddleware(BaseMiddleware):
             try:
                 token = self.review_service.tickets.claim_direct_spam(
                     item.chat_id, item.message_id, admin, item.text, reason="wave_delete",
-                    chat_title=item.chat_title,
+                    chat_title=item.chat_title, subject=item.restriction_subject,
                 )
                 if token is None:
                     counts["skipped"] += 1
@@ -324,6 +325,7 @@ class MigrationMiddleware(BaseMiddleware):
                     await self.review_service.send(
                         admin, message.chat.id, message.message_id, text,
                         model={"review_signal": offer}, chat_title=message.chat.title,
+                        subject=restriction_subject(message),
                     )
                 else:
                     await data["bot"].send_message(admin, body, parse_mode=None)

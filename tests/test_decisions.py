@@ -181,13 +181,14 @@ class IntegrationTests(unittest.IsolatedAsyncioTestCase):
                 ns=dict(model=LoadedModel(Pipeline(p),VERSION),logger=SimpleNamespace(info=lambda *a:None,error=lambda *a:None,warning=lambda *a:None,debug=lambda *a:None),
                     action_logger=logger,DATASET_PATH=db,log_decision=log_decision,persist_decision=persist_decision,
                     classify_and_decide=classify_and_decide,diagnostic_text=diagnostic_text,
-                    DRY_RUN=False,SPAM_DELETE_THRESHOLD=.7,SPAM_MODERATE_THRESHOLD=.4,is_admin=lambda uid:True,
+                    DRY_RUN=False,AUTO_DELETE_DIRECT_USDT=False,can_moderate_sender=permissions,
+                    spam_waves=SimpleNamespace(recent={}),restriction_subject=lambda message:None,SPAM_DELETE_THRESHOLD=.7,SPAM_MODERATE_THRESHOLD=.4,is_admin=lambda uid:True,
                     execute_actions=execute_actions,log_action=lambda *args:None,
                     ADMIN_IDS=[1],bot=SimpleNamespace(send_message=send),
                     review_service=SimpleNamespace(reviewers_for=lambda chat:(1,)),
                     check_bot_permissions=permissions,TelegramBadRequest=BadRequest,TelegramForbiddenError=Forbidden,
                     TelegramNotFound=NotFound)
-                exec(extract_functions('filter_message','cmd_test_spam','record_decision'),ns)
+                exec(extract_functions('filter_message','apply_filter_decision','cmd_test_spam','record_decision'),ns)
                 normal=Message();await ns['filter_message'](normal)
                 diagnostic=Message();diagnostic.text='/test_spam '+normal.text
                 replies=[]

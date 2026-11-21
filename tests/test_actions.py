@@ -25,7 +25,9 @@ class NotFound(Exception): pass
 
 class Message:
     def __init__(self, error=None, response=True):
-        self.chat = SimpleNamespace(id=-100)
+        self.chat = SimpleNamespace(id=-100, type='private', title=None)
+        self.caption = self.entities = self.caption_entities = None
+        self.forward_origin = self.is_automatic_forward = self.quote = self.external_reply = None
         self.message_id = 42
         self.text = 'synthetic test text'
         self.from_user = SimpleNamespace(id=7, username='test')
@@ -211,7 +213,8 @@ def extracted_handler(path, namespace):
     fn = next(n for n in tree.body if isinstance(n, ast.AsyncFunctionDef) and n.name == 'filter_message')
     fn.decorator_list = []
     fn.args.args[0].annotation = None
-    isolated = ast.fix_missing_locations(ast.Module(body=[fn], type_ignores=[]))
+    apply = next(n for n in tree.body if isinstance(n, ast.AsyncFunctionDef) and n.name == 'apply_filter_decision')
+    isolated = ast.fix_missing_locations(ast.Module(body=[fn, apply], type_ignores=[]))
     exec(compile(isolated, str(path), 'exec'), namespace)
     return namespace['filter_message']
 
@@ -229,7 +232,8 @@ class HandlerTests(unittest.IsolatedAsyncioTestCase):
             predict=lambda *args: (label, confidence), DATASET_PATH='unused',
             classify_and_decide=lambda model, text, dry_run=False, **kw: decide(label, confidence,
                 model_version='sha256:' + 'a'*64, text=text, **kw),
-            record_decision=lambda *args: True, DRY_RUN=False,
+            record_decision=lambda *args: True, DRY_RUN=False, AUTO_DELETE_DIRECT_USDT=False,
+            can_moderate_sender=permissions, spam_waves=SimpleNamespace(recent={}), restriction_subject=lambda message: None,
             log_action=write, SPAM_DELETE_THRESHOLD=.7, SPAM_MODERATE_THRESHOLD=.4,
             ADMIN_IDS=[1, 2], bot=SimpleNamespace(send_message=send),
             review_service=SimpleNamespace(reviewers_for=lambda chat:(1, 2),send=review_send,tickets=SimpleNamespace(record_auto_delete=lambda *args:None)),

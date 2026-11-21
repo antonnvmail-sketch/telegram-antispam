@@ -20,7 +20,7 @@ class ReviewDispatcher(unittest.TestCase):
             script=r'''
 import asyncio,json,runpy,socket,sys,sqlite3,uuid
 from dataclasses import replace
-from datetime import datetime,timezone
+from datetime import datetime,timedelta,timezone
 from unittest.mock import patch
 import aiogram
 from aiogram import types
@@ -42,12 +42,14 @@ class FakeBot(aiogram.Bot):
             raise TelegramForbiddenError(method=method,message='Forbidden')
         if item['method']=='deleteMessage' and item['message'] in wave_unknown:
             raise TimeoutError()
-        if item['method'] in {'deleteMessage','answerCallbackQuery','editMessageText'}:return True
+        if item['method'] in {'deleteMessage','answerCallbackQuery','editMessageText','restrictChatMember'}:return True
         if item['method'] in {'sendMessage','sendDocument'}:
             item['id']=90000+len(calls)
             if item['method']=='sendDocument':item['csv']=method.document.data
             return types.Message(message_id=item['id'],date=datetime.now(timezone.utc),chat=types.Chat(id=item['chat'],type='private' if item['chat']>0 else 'supergroup'),text=item['text'])
         raise AssertionError(item['method'])
+    async def get_chat_member(self, chat_id, user_id, **kwargs):
+        return types.ChatMemberMember(status="member", user=types.User(id=user_id,is_bot=False,first_name="Synthetic"))
     async def get_me(self,**kwargs):return types.User(id=self.id,is_bot=True,first_name='Synthetic')
 original=socket.socket.connect
 def offline(sock,address,*args,**kwargs):
@@ -80,7 +82,7 @@ with patch.object(aiogram,'Bot',FakeBot),patch.object(socket.socket,'connect',of
         out=await press(card,'spam');assert [(c['chat'],c['message']) for c in out if c['method']=='deleteMessage']==[(-100123,mid)]
         assert not any(c['method']=='deleteMessage' for c in await press(card,'spam'))
         _,out=await feed('SYNTHETIC_REVIEW');card=next(c for c in out if c['method']=='sendMessage' and c['chat']==7);await press(card,'keep')
-        counts=service.tickets.stats()['months'][-1];assert [counts[k] for k in ['auto_deleted','manual_deleted','false_positive_reports','reviewed_ham']]==[1,1,1,1]
+        counts=service.tickets.stats(now=datetime.now(timezone.utc) + timedelta(seconds=1))['months'][-1];assert [counts[k] for k in ['auto_deleted','manual_deleted','false_positive_reports','reviewed_ham']]==[1,1,1,1],counts
         _,out=await feed('/stat',chat=7);assert any('месяц не завершён' in (c['text'] or '') for c in out)
         _,out=await feed('/stat_export',chat=7);csv=next(c['csv'] for c in out if c['method']=='sendDocument').decode('utf-8-sig');assert len(csv.splitlines())==4 and 'chat_id' not in csv
         _,out=await feed('/review_stats',chat=7);assert any('Ответов администраторов: 3' in (c['text'] or '') for c in out)
@@ -98,6 +100,8 @@ with patch.object(aiogram,'Bot',FakeBot),patch.object(socket.socket,'connect',of
         assert any('Сделка с USDT — показано 1, спам 1, не спам 0' in c['text'] for c in out)
         assert any('Работа с приглашением в личку — показано 1, спам 0, не спам 1' in c['text'] for c in out)
         _,out=await feed('Куплю USDT',chat=-100999);assert out==[]
+        # Independent scenarios below exercise the legacy review paths.
+        ns['spam_waves'].recent.clear()
         notice='Чат переносится в новую группу. Перейдите по ссылке.'
         mid,out=await feed(notice);assert out==[]
         hidden=[types.MessageEntity(type='text_link',offset=0,length=3,url='https://t.me/example')]
@@ -137,7 +141,7 @@ with patch.object(aiogram,'Bot',FakeBot),patch.object(socket.socket,'connect',of
             f'https://t.me/c/124/{following[0]}',f'https://t.me/c/124/{following[1]}',
         }
         assert not any(c['method']=='deleteMessage' for c in await press(preview,'confirm',prefix='wave',actor=8))
-        wave_stats=service.tickets.stats()['months'][-1]
+        wave_stats=service.tickets.stats(now=datetime.now(timezone.utc) + timedelta(seconds=1))['months'][-1]
         assert wave_stats['wave_reports']==9 and wave_stats['wave_deleted']==6
         _,out=await feed('@Data_Migration_ROBOT 1a23456b8d');assert out==[]
         _,out=await feed('@Connect_TG_ROBOT 1a23456b8d',chat=-100124)
@@ -153,7 +157,7 @@ with patch.object(aiogram,'Bot',FakeBot),patch.object(socket.socket,'connect',of
         direct=[r for r in service.tickets.feedback_report()['feedback'] if r['reason']=='spam_command']
         assert [(r['text'],r['telegram_delete_status']) for r in direct]==[('Пропущенный спам','confirmed_deleted'),('Пропущенный спам','rejected')]
         assert direct[0]['admin_id']==8 and direct[0]['model']['chat_title']=='Synthetic group'
-        counts=service.tickets.stats()['months'][-1]
+        counts=service.tickets.stats(now=datetime.now(timezone.utc) + timedelta(seconds=1))['months'][-1]
         assert counts['spam_command_reports']==2 and counts['spam_command_deleted']==1
         _,out=await feed('/review_stats',chat=7)
         assert any('/spam — отметок 2, подтверждённых удалений 1' in (c['text'] or '') for c in out)

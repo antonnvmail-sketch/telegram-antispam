@@ -1,7 +1,8 @@
-"""Persistent, administrator-confirmed deletion. No training or account bans."""
+"""Persistent manual review and temporary restrictions on repeat offenders."""
 import asyncio
 import hashlib
 import json
+import logging
 from contextlib import closing
 from datetime import datetime
 import secrets
@@ -10,7 +11,7 @@ import time
 from pathlib import Path
 from aiogram import Router,F
 from aiogram.filters import Command
-from aiogram.types import InlineKeyboardMarkup,InlineKeyboardButton,BufferedInputFile
+from aiogram.types import InlineKeyboardMarkup,InlineKeyboardButton,BufferedInputFile,ChatPermissions
 from monthly_stats import MSK,monthly_report,format_report,csv_report
 
 SIGNAL_NAMES = {
@@ -18,6 +19,19 @@ SIGNAL_NAMES = {
     'remote_work_private_contact': 'Работа с приглашением в личку',
 }
 from aiogram.exceptions import TelegramBadRequest,TelegramForbiddenError,TelegramNotFound
+
+RESTRICTION_SECONDS = 72 * 60 * 60
+MANUAL_SPAM_REASONS = ('explicit_review', 'spam_command', 'wave_delete')
+logger = logging.getLogger(__name__)
+
+
+def restriction_subject(message):
+    user = getattr(message, 'from_user', None)
+    if (user is not None and not getattr(user, 'is_bot', False)
+            and getattr(message, 'sender_chat', None) is None and message.chat.type == 'supergroup'):
+        return user.id
+    return None
+
 
 class Tickets:
     def __init__(self,path):
@@ -56,7 +70,7 @@ class Tickets:
     def bind(self,token,notification_id):
         with closing(self.connect()) as c:c.execute('UPDATE tickets SET notification_id=? WHERE token=?',(notification_id,token));c.commit()
 
-    def claim_direct_spam(self, chat_id, message_id, admin_id, text, *, reason, chat_title=None):
+    def claim_direct_spam(self, chat_id, message_id, admin_id, text, *, reason, chat_title=None, subject=None):
         token = secrets.token_hex(12)
         now = time.time()
         digest = hashlib.sha256(text.encode('utf-8')).hexdigest()
@@ -76,7 +90,8 @@ class Tickets:
             c.execute('INSERT INTO tickets VALUES(?,?,?,?,?,?,NULL,?)',
                       (token, chat_id, message_id, admin_id, now, 'processing', admin_id))
             c.execute('INSERT INTO ticket_evidence VALUES(?,?,?,?,?)',
-                      (token, 'review', text, digest, json.dumps({'chat_title': chat_title}, ensure_ascii=False)))
+                      (token, 'review', text, digest,
+                       json.dumps({'chat_title': chat_title, 'restriction_subject': subject}, ensure_ascii=False)))
             c.execute('INSERT INTO feedback_events(token,label,admin_id,reason,at) VALUES(?,?,?,?,?)',
                       (token, 'SPAM', admin_id, reason, now))
             c.execute('INSERT INTO review_audit(token,state,at) VALUES(?,?,?)', (token, 'processing', now))
@@ -114,6 +129,73 @@ class Tickets:
     def invalidate(self,chat_id,message_id):
         with closing(self.connect()) as c:
             c.execute("UPDATE tickets SET state='edited' WHERE chat_id=? AND message_id=? AND state='pending'",(chat_id,message_id));c.commit()
+
+    def reserve_restriction(self, token, chat_id, user_id, now):
+        """Consume one pair and reserve a single Telegram request across workers."""
+        key = f'repeat_restriction:{chat_id}:{user_id}'
+        with closing(self.connect()) as c, c:
+            c.execute('BEGIN IMMEDIATE')
+            c.execute('''UPDATE ticket_evidence SET model_json=json_set(model_json, '$.restriction_role_verified', 1)
+                         WHERE token=?''', (token,))
+            previous = c.execute('SELECT value FROM review_meta WHERE key=?', (key,)).fetchone()
+            state = json.loads(previous['value']) if previous else {}
+            if state.get('until', 0) > now:
+                return None
+            rows = c.execute('''
+                SELECT t.message_id, MIN(f.id) AS feedback_id
+                FROM feedback_events f JOIN tickets t USING(token) JOIN ticket_evidence e USING(token)
+                WHERE t.chat_id=? AND f.id>? AND f.label='SPAM' AND f.reason IN (?,?,?)
+                    AND json_extract(e.model_json, '$.restriction_subject')=?
+                    AND json_extract(e.model_json, '$.restriction_role_verified')=1
+                    AND NOT EXISTS (
+                        SELECT 1 FROM review_meta WHERE key='wave_ham:' || t.chat_id || ':' || t.message_id
+                    )
+                    AND NOT EXISTS (
+                        SELECT 1 FROM feedback_events correction
+                        JOIN tickets corrected ON corrected.token=correction.token
+                        WHERE corrected.chat_id=t.chat_id AND corrected.message_id=t.message_id
+                            AND correction.label='HAM' AND correction.id>f.id
+                    )
+                    AND NOT EXISTS (
+                        SELECT 1 FROM feedback_events old JOIN tickets prior ON prior.token=old.token
+                        WHERE prior.chat_id=t.chat_id AND prior.message_id=t.message_id
+                            AND old.id<=? AND old.label='SPAM'
+                    )
+                GROUP BY t.message_id ORDER BY feedback_id LIMIT 2
+                ''', (chat_id, state.get('through', 0), *MANUAL_SPAM_REASONS, user_id,
+                      state.get('through', 0))).fetchall()
+            if len(rows) < 2:
+                return None
+            until = now + RESTRICTION_SECONDS
+            value = {'token': token, 'through': rows[-1]['feedback_id'], 'until': until,
+                     'outcome': 'pending', 'messages': [row['message_id'] for row in rows]}
+            c.execute('INSERT OR REPLACE INTO review_meta VALUES(?,?)', (key, json.dumps(value)))
+            c.execute('INSERT INTO review_meta VALUES(?,?)',
+                      (f'restriction_audit:{token}', json.dumps({**value, 'subject_key': key})))
+        return key, until
+
+    def finish_restriction(self, key, token, outcome):
+        with closing(self.connect()) as c, c:
+            c.execute('''UPDATE review_meta SET value=json_set(value, '$.outcome', ?)
+                         WHERE key=? AND json_extract(value, '$.token')=?''', (outcome, key, token))
+            c.execute("UPDATE review_meta SET value=json_set(value, '$.outcome', ?) WHERE key=?",
+                      (outcome, f'restriction_audit:{token}'))
+
+    def restriction_state(self, key):
+        with closing(self.connect()) as c:
+            row = c.execute('SELECT value FROM review_meta WHERE key=?', (key,)).fetchone()
+        return json.loads(row['value']) if row else {}
+
+    def record_release(self, key, state, actor, outcome):
+        updated = {**state, 'release': {'actor': actor, 'at': time.time(), 'outcome': outcome}}
+        with closing(self.connect()) as c, c:
+            result = c.execute('UPDATE review_meta SET value=? WHERE key=? AND json(value)=json(?)',
+                               (json.dumps(updated), key, json.dumps(state)))
+            if result.rowcount:
+                c.execute('''UPDATE review_meta SET value=json_insert(
+                        json_insert(value, '$.releases', json('[]')), '$.releases[#]', json(?))
+                    WHERE key=?''', (json.dumps(updated['release']), f'restriction_audit:{state["token"]}'))
+        return updated if result.rowcount else None
     def feedback_report(self):
         with closing(self.connect()) as c:
             rows=[dict(r) for r in c.execute('''SELECT f.id,f.label,f.admin_id,f.reason,f.at,
@@ -178,10 +260,12 @@ def deletion_failure(exc):
 
 
 class AdminReview:
-    def __init__(self,bot,tickets,admins,chats,dry_run=False,*,moderator_chats=None):
+    def __init__(self,bot,tickets,admins,chats,dry_run=False,*,moderator_chats=None,repeat_restrictions=False):
         self.bot=bot;self.tickets=tickets;self.admins=admins;self.chats=chats;self.dry_run=dry_run
         self.moderator_chats = dict(moderator_chats or {})
         self.reviewers = tuple(dict.fromkeys((*admins, *self.moderator_chats)))
+        self.repeat_restrictions = repeat_restrictions and not dry_run
+        self.wave_reports = None
 
     def can_review(self, actor, chat_id):
         return chat_id in self.chats and (
@@ -208,8 +292,121 @@ class AdminReview:
             outcome = 'deleted' if response is True else 'unknown'
             status = 'Исходное сообщение удалено.' if response is True else 'Удаление не подтверждено. Проверьте исходный чат.'
         self.tickets.finish(token, outcome, origin)
+        if self.repeat_restrictions:
+            restriction_status = await self.restrict_repeat_offender(token, chat_id)
+            if restriction_status:
+                status += '\n' + restriction_status
         return outcome, status
-    async def send(self,admin_id,chat_id,message_id,text,model=None,kind='review',chat_title=None):
+
+    async def restrict_repeat_offender(self, token, chat_id):
+        evidence = self.tickets.evidence(token)
+        subject = json.loads(evidence['model_json']).get('restriction_subject') if evidence else None
+        if type(subject) is not int or subject <= 0:
+            return None
+        try:
+            member = await self.bot.get_chat_member(chat_id, subject, request_timeout=3)
+        except Exception as exc:
+            logger.warning('Repeat-offender role check failed in chat %s: %s', chat_id, type(exc).__name__)
+            return None
+        # Preserve protected roles and existing restrictions.
+        if getattr(member, 'status', None) != 'member':
+            return None
+        try:
+            reservation = self.tickets.reserve_restriction(token, chat_id, subject, int(time.time()))
+        except sqlite3.Error:
+            logger.exception('Failed to reserve repeat-offender restriction')
+            return 'Ограничение не запрошено: не удалось записать решение.'
+        if reservation is None:
+            return None
+        key, until = reservation
+        outcome = 'unknown'
+        try:
+            response = await self.bot.restrict_chat_member(
+                chat_id, subject, permissions=ChatPermissions(
+                    can_send_messages=False, can_send_audios=False, can_send_documents=False,
+                    can_send_photos=False, can_send_videos=False, can_send_video_notes=False,
+                    can_send_voice_notes=False, can_send_polls=False, can_send_other_messages=False,
+                    can_add_web_page_previews=False,
+                ),
+                use_independent_chat_permissions=True, until_date=until, request_timeout=5,
+            )
+            if response is True:
+                outcome = 'restricted'
+        except (TelegramBadRequest, TelegramForbiddenError, TelegramNotFound):
+            outcome = 'rejected'
+        except Exception as exc:
+            logger.warning('Repeat-offender restriction result unknown: %s', type(exc).__name__)
+        finally:
+            logger.info('Repeat-offender restriction chat=%s user=%s until=%s outcome=%s',
+                        chat_id, subject, until, outcome)
+            try:
+                self.tickets.finish_restriction(key, token, outcome)
+            except sqlite3.Error:
+                logger.exception('Failed to record repeat-offender restriction result')
+        if outcome == 'restricted':
+            try:
+                state = self.tickets.restriction_state(key)
+            except sqlite3.Error:
+                logger.exception('Failed to read repeat-offender restriction result')
+            else:
+                await self.report_restriction(chat_id, subject, state, outcome)
+        return {
+            'restricted': 'Право отправлять сообщения ограничено на 72 часа.',
+            'rejected': 'Telegram отклонил ограничение. Проверьте права бота.',
+            'unknown': 'Результат ограничения неизвестен. Проверьте права участника в чате.',
+        }[outcome]
+
+    async def report_restriction(self, chat_id, subject, state, outcome, actor=None):
+        if self.wave_reports is None:
+            return
+        try:
+            waves = {self.wave_reports.wave_for(chat_id, message_id) for message_id in state.get('messages', ())}
+            for wave_id in waves - {None}:
+                await self.wave_reports.restriction(wave_id, chat_id, subject, outcome, actor)
+        except Exception:
+            logger.exception('Failed to update wave report for restriction')
+
+    async def release_repeat_restriction(self, chat_id, subject, actor):
+        key = f'repeat_restriction:{chat_id}:{subject}'
+        state = self.tickets.restriction_state(key)
+        if (state.get('outcome') != 'restricted' or state.get('until', 0) <= time.time()
+                or state.get('release', {}).get('outcome') in {'pending', 'released', 'unknown'}):
+            return 'Активного подтверждённого ограничения бота для этого участника нет.'
+        try:
+            member = await self.bot.get_chat_member(chat_id, subject, request_timeout=3)
+        except Exception:
+            return 'Не удалось проверить текущее ограничение в Telegram.'
+        until = getattr(member, 'until_date', None)
+        if isinstance(until, datetime):
+            until = int(until.timestamp())
+        if getattr(member, 'status', None) != 'restricted' or until != state['until']:
+            return 'Текущее ограничение в Telegram отличается от назначенного ботом.'
+        pending = self.tickets.record_release(key, state, actor, 'pending')
+        if pending is None:
+            return 'Состояние ограничения изменилось. Проверьте участника в чате.'
+        outcome = 'unknown'
+        try:
+            permissions = ChatPermissions(**dict.fromkeys(ChatPermissions.model_fields, True))
+            response = await self.bot.restrict_chat_member(
+                chat_id, subject, permissions=permissions, use_independent_chat_permissions=True,
+                request_timeout=5,
+            )
+            if response is True:
+                outcome = 'released'
+        except (TelegramBadRequest, TelegramForbiddenError, TelegramNotFound):
+            outcome = 'rejected'
+        except Exception as exc:
+            logger.warning('Repeat-offender release result unknown: %s', type(exc).__name__)
+        finally:
+            self.tickets.record_release(key, pending, actor, outcome)
+        if outcome == 'released':
+            await self.report_restriction(chat_id, subject, state, outcome, actor)
+            return 'Ограничение снято. Исходное решение и исправление сохранены.'
+        if outcome == 'rejected':
+            return 'Telegram отклонил снятие ограничения.'
+        return 'Результат снятия ограничения неизвестен. Проверьте участника в чате.'
+
+    async def send(self,admin_id,chat_id,message_id,text,model=None,kind='review',chat_title=None,subject=None):
         if self.dry_run:raise ValueError('Пробный режим: карточки действий отключены.')
         if not self.can_review(admin_id,chat_id):raise ValueError('Unapproved review destination')
         with closing(self.tickets.connect()) as c:
@@ -220,6 +417,8 @@ class AdminReview:
         if existing:return None
         if chat_title:
             model = {**(model or {}), 'chat_title': chat_title}
+        if kind == 'review' and subject is not None:
+            model = {**(model or {}), 'restriction_subject': subject}
         token=self.tickets.create(chat_id,message_id,admin_id,text,model,kind)
         buttons=[
             InlineKeyboardButton(text='Спам — удалить',callback_data='rv:spam:'+token),
@@ -256,7 +455,15 @@ class AdminReview:
         try:await query.answer('Принято.')
         except Exception:pass
         markup=None
-        if parts[1]=='ham':status='Ошибка удаления отмечена: НЕ СПАМ. Текст и решение модели сохранены для анализа. Восстановление и обучение не выполнялись.'
+        if parts[1]=='ham':
+            status='Ошибка удаления отмечена: НЕ СПАМ. Текст и решение модели сохранены для анализа. Восстановление и обучение не выполнялись.'
+            if self.wave_reports:
+                try:
+                    wave_id = self.wave_reports.wave_for(row['chat_id'], row['message_id'])
+                    if wave_id:
+                        await self.wave_reports.correct_message(wave_id, row['chat_id'], row['message_id'], actor)
+                except Exception:
+                    logger.exception('Failed to update wave report after a corrected review')
         elif parts[1]=='keep':status='НЕ СПАМ — бот не удалял сообщение. Ваше решение сохранено для анализа. В обучение не добавлено.'
         else:
             outcome,status=await self.delete_claimed(parts[2],row['chat_id'],row['message_id'])
@@ -289,7 +496,7 @@ def make_router(service):
         if service.dry_run:
             await message.reply('Пробный режим: карточки действий отключены. Для диагностики используйте /test_spam.');return
         original=message.reply_to_message
-        result=await service.send(message.from_user.id,message.chat.id,original.message_id,original.text or original.caption or '[Нет текста]',chat_title=getattr(message.chat,'title',None))
+        result=await service.send(message.from_user.id,message.chat.id,original.message_id,original.text or original.caption or '[Нет текста]',chat_title=getattr(message.chat,'title',None),subject=restriction_subject(original))
         await message.reply('Карточка отправлена вам в личный чат с ботом.' if result else 'Карточка уже есть в вашем личном чате с ботом; используйте её кнопки.')
     @router.message(Command('review_stats'))
     async def stats(message):
@@ -343,7 +550,7 @@ def make_router(service):
             token = service.tickets.claim_direct_spam(
                 message.chat.id, original.message_id, message.from_user.id,
                 original.text or original.caption or '[Нет текста]', reason='spam_command',
-                chat_title=message.chat.title,
+                chat_title=message.chat.title, subject=restriction_subject(original),
             )
         except sqlite3.Error:
             await message.reply('Не удалось сохранить отметку. Бот не удалял сообщение.')

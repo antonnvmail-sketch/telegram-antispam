@@ -1,5 +1,45 @@
 # Антиспам 1.0.4
 
+## Что нового в 1.0.5
+
+1. **Межгрупповые спам-волны.** Бот связывает от двух подозрительных сообщений в разных подключённых группах при сходстве текста или подписи от 90% за 60 секунд. Отправители могут быть разными.
+2. **Немедленное автоудаление.** При `DRY_RUN=false` бот сразу запрашивает удаление совпадений с собственным сигналом спама и продолжает наблюдать до 30 секунд тишины.
+3. **Повторные нарушители.** После двух разных сообщений одного автора, вручную подтверждённых как спам в одной супергруппе, бот запрещает ему писать на 72 часа. Боту нужны права ограничивать участников.
+4. **Единый отчёт.** Каждый настроенный администратор получает одну обновляемую карточку с обнаружениями, удалениями, группами, ограничениями, длительностью, типом сигнала и долей подтверждённых удалений.
+5. **Исправление ошибок.** `/wave_ham ID_волны ID_группы ID_сообщения` отмечает ложное срабатывание, а `/wave_release ID_группы ID_участника` снимает действующее ограничение этого бота. Исходные решения остаются в истории.
+6. **История волн для AST Console.** AST Console — будущий Android-инструмент для администраторов. Есть ранний прототип, полноценное приложение остаётся долгосрочным планом без объявленных сроков. v1.0.5 сохраняет историю волн и готовит статистику для будущей интеграции. Локальная JSON-выгрузка уже доступна. Серверный API для волн и экран статистики пока только запланированы.
+
+**Также в v1.0.5 вошли два исправления, ранее установленные на рабочем боте**
+
+- **Защита сообщений администраторов и владельцев.** Перед автоудалением бот проверяет роль автора. Публикации от имени чата, включая анонимные, и сообщения с неподтверждённой ролью пропускаются.
+- **Расширенный фильтр прямых сделок с USDT.** Бот распознаёт больше формулировок покупки, продажи и обмена, включая варианты `ustd` и «юсдт». Автоудаление по этому правилу включается отдельно через `AUTO_DELETE_DIRECT_USDT=true`.
+
+Пробный режим включён по умолчанию. Локальная статистика по указанным группам:
+
+```shell
+python wave_statistics.py --db dataset.sqlite.admin-review.sqlite --group=-1001234567890
+```
+
+## New in 1.0.5
+
+1. **Cross-group spam waves.** The bot links at least two independently suspicious posts in different connected groups when their text or captions match by 90% or more within 60 seconds. The senders may differ.
+2. **Immediate automatic deletion.** With `DRY_RUN=false`, the bot requests deletion as soon as a match is confirmed and keeps tracking until 30 seconds of silence.
+3. **Repeat offenders.** Two distinct posts from the same user manually confirmed as spam in one supergroup trigger a 72-hour posting restriction. The bot needs permission to restrict members.
+4. **One editable wave report.** Each configured administrator receives a single report showing detections, deletions, affected groups, restrictions, duration, signal type, and the confirmed deletion rate.
+5. **Moderation corrections.** In a private chat, `/wave_ham WAVE_ID GROUP_ID MESSAGE_ID` marks a false positive and `/wave_release GROUP_ID USER_ID` lifts an active restriction imposed by the bot. Original decisions remain in the audit trail.
+6. **Wave history for AST Console.** AST Console is a planned Android tool for administrators. An early prototype exists, and the full app remains a long-term goal with no announced timeline. The bot now stores wave history and provides a local JSON export. The server endpoint and the wave screen are planned.
+
+**v1.0.5 also includes two fixes previously deployed to the production bot**
+
+- **Administrator and owner protection.** Automatic deletion checks the sender’s group role. Posts sent as a chat, including anonymous posts, and posts from unverified roles are exempt.
+- **Expanded direct USDT trade filter.** The bot recognizes more buy, sell, and exchange offers, including ticker variants such as `ustd` and «юсдт». Enable automatic actions for this rule with `AUTO_DELETE_DIRECT_USDT=true`.
+
+Dry-run mode is enabled by default. Export wave statistics for an authorized group:
+
+```shell
+python wave_statistics.py --db dataset.sqlite.admin-review.sqlite --group=-1001234567890
+```
+
 Спам-волна — серия сообщений, которая почти одновременно появляется в нескольких группах. Например, в разных чатах рассылают ложное объявление о закрытии и переезде. Когда бот видит один и тот же известный маркер в двух группах за 15 секунд, он собирает совпадения в одну карточку.
 
 1. **Карточка спам-волны.** До 20 сообщений с известным маркером из разных групп и ссылки на оригиналы. Новые совпадения дополняют карточку.

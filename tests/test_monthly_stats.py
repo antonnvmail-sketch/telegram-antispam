@@ -3,7 +3,7 @@ from pathlib import Path
 from types import SimpleNamespace as N
 import tempfile
 import unittest
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 from monthly_stats import monthly_report,format_report,csv_report,MSK
 from admin_review import Tickets,AdminReview,make_router
 
@@ -44,9 +44,15 @@ class CalendarTests(unittest.TestCase):
         self.assertTrue(csv_report(r).startswith(b'\xef\xbb\xbf'))
     def test_auto_deletion_deduplicates_and_survives_reopen(self):
         with tempfile.TemporaryDirectory() as directory:
-            path=Path(directory)/'review.sqlite';store=Tickets(path)
-            store.record_auto_delete(-100,7);store.record_auto_delete(-100,7)
-            self.assertEqual(Tickets(path).stats()['months'][-1]['auto_deleted'],1)
+            path = Path(directory) / 'review.sqlite'
+            event = datetime(2026, 11, 21, 12, tzinfo=MSK)
+            with patch('admin_review.time.time', return_value=event.timestamp()):
+                store = Tickets(path)
+                store.record_auto_delete(-100, 7)
+                store.record_auto_delete(-100, 7)
+                reopened = Tickets(path)
+            report = reopened.stats(now=event.replace(minute=1))
+            self.assertEqual(report['months'][-1]['auto_deleted'], 1)
 
 class CommandTests(unittest.IsolatedAsyncioTestCase):
     async def test_stat_and_export_only_private_admin_and_no_original_text(self):

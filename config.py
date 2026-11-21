@@ -30,6 +30,7 @@ def load_moderator_chats(raw):
 MODERATOR_CHAT_IDS = load_moderator_chats(os.getenv("MODERATOR_CHAT_IDS", "{}"))
 DATASET_PATH = os.getenv("DATASET_PATH", "dataset.sqlite")
 MODEL_PATH = os.getenv("MODEL_PATH", "model.joblib")
+AUTO_DELETE_DIRECT_USDT = os.getenv("AUTO_DELETE_DIRECT_USDT", "false").strip().lower() in {"1", "true", "yes", "on"}
 DRY_RUN = os.getenv("DRY_RUN", "true").strip().lower() in {"1", "true", "yes", "on"}
 EXPERIMENTAL_REVIEW_ALERTS = os.getenv("EXPERIMENTAL_REVIEW_ALERTS", "false").strip().lower() in {
     "1", "true", "yes", "on",

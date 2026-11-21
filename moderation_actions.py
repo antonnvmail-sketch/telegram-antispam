@@ -89,7 +89,14 @@ async def execute_actions(*, message, decision_record, journal_decision,
         return result
     user = message.from_user
     sender = user.username if user and user.username else user.id if user else None
-    suffix = f'\n\n{message.text}\n\nОт: @{sender}\nЧат: {message.chat.id}'
+    original_text = message.text or getattr(message, 'caption', None) or ''
+    suffix = f'\n\n{original_text}\n\nОт: @{sender}\nЧат: {message.chat.id}'
+    if decision == 'delete' and journal_unavailable and decision_record.reason in {
+        'direct_usdt_trade_rule', 'confirmed_spam_wave',
+    }:
+        result.deletion = 'skipped'
+        event('deletion', 'skipped', 'delete_skipped_journal_unavailable')
+        return result
     if decision == 'delete':
         event('deletion', 'attempted', 'delete_attempted')
         deletion_error = None
@@ -124,8 +131,8 @@ async def execute_actions(*, message, decision_record, journal_decision,
             status=(deletion_failure(deletion_error)[1] if deletion_error is not None else
                     'Результат удаления неизвестен. Проверьте чат; автоматического повтора не будет.')
             title=str(getattr(message.chat,'title',None) or message.chat.id)[:160]
-            text=f'{status}\nЧат: {title} ({message.chat.id})\nСообщение: {message.message_id}\n\n{message.text[:2400]}'
-            if len(message.text)>2400:text+='\n[Текст сокращён]'
+            text=f'{status}\nЧат: {title} ({message.chat.id})\nСообщение: {message.message_id}\n\n{original_text[:2400]}'
+            if len(original_text)>2400:text+='\n[Текст сокращён]'
             link=source_link(message.chat.id,message.message_id)
             if link:text+='\n\nПроверить сообщение: '+link
             await notify(text)
